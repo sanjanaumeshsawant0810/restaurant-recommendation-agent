@@ -1282,6 +1282,16 @@ def get_session(session_id: str):
     )
 
 
+@app.delete("/api/session/<session_id>")
+def delete_session(session_id: str):
+    with SESSIONS_LOCK:
+        state = SESSIONS.pop(session_id, None)
+        if state is None:
+            return jsonify({"error": "Session not found"}), 404
+        save_sessions_to_disk()
+    return jsonify({"deleted_session_id": session_id})
+
+
 @app.post("/api/chat")
 def chat():
     payload = request.get_json(force=True)

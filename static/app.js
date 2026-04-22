@@ -80,6 +80,9 @@ function renderSessionList() {
   }
 
   sessions.forEach((session) => {
+    const item = document.createElement("div");
+    item.className = `session-row${session.session_id === sessionId ? " active" : ""}`;
+
     const button = document.createElement("button");
     button.type = "button";
     button.className = `session-item${session.session_id === sessionId ? " active" : ""}`;
@@ -88,8 +91,38 @@ function renderSessionList() {
       <div class="session-meta">${formatSessionTimestamp(session.updated_at)}</div>
     `;
     button.addEventListener("click", () => loadSession(session.session_id));
-    sessionList.appendChild(button);
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "session-delete";
+    deleteButton.setAttribute("aria-label", `Delete chat ${session.title || "New chat"}`);
+    deleteButton.textContent = "Delete";
+    deleteButton.addEventListener("click", async () => {
+      await deleteSession(session.session_id);
+    });
+
+    item.appendChild(button);
+    item.appendChild(deleteButton);
+    sessionList.appendChild(item);
   });
+}
+
+async function deleteSession(targetSessionId) {
+  await requestJson(`/api/session/${targetSessionId}`, { method: "DELETE" });
+  const deletedCurrentSession = targetSessionId === sessionId;
+  await refreshSessions();
+
+  if (!sessions.length) {
+    await createSession();
+    return;
+  }
+
+  if (deletedCurrentSession) {
+    await loadSession(sessions[0].session_id);
+    return;
+  }
+
+  renderSessionList();
 }
 
 function renderAgentTrace(traceItems = []) {
