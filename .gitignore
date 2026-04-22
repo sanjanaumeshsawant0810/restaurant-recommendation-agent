@@ -1,0 +1,10 @@
+.DS_Store
+.ipynb_checkpoints/
+__pycache__/
+*.pyc
+.venv/
+
+# Large raw datasets and derived data snapshots
+*.json
+*.csv
+*.pdf

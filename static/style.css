@@ -1,0 +1,268 @@
+:root {
+  --bg: #e1d3b6;
+  --panel: rgba(250, 244, 228, 0.88);
+  --panel-strong: #f7f0df;
+  --ink: #202334;
+  --muted: #52698f;
+  --accent: #c67e10;
+  --accent-deep: #8f5a0c;
+  --accent-soft: #f6c46d;
+  --line: rgba(32, 35, 52, 0.14);
+  --user: #202334;
+  --assistant: #f6e7c7;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: Georgia, "Times New Roman", serif;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top left, rgba(246, 196, 109, 0.32), transparent 30%),
+    radial-gradient(circle at bottom right, rgba(61, 95, 130, 0.2), transparent 26%),
+    linear-gradient(135deg, #efe4c8, #f5ecd7 46%, #e1d3b6);
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  gap: 24px;
+  padding: 24px;
+  min-height: 100vh;
+  align-items: start;
+}
+
+.chat-panel,
+.map-card,
+.insight-card {
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  background: var(--panel);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 20px 60px rgba(56, 41, 25, 0.12);
+}
+
+.chat-panel {
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+  height: calc(100vh - 48px);
+  min-height: 720px;
+}
+
+.hero h1,
+.map-copy h2 {
+  margin: 0;
+  font-size: clamp(1.1rem, 1.8vw, 1.5rem);
+  line-height: 1.15;
+  color: var(--muted);
+}
+
+.eyebrow {
+  margin: 0 0 10px;
+  font-size: 0.8rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent-deep);
+}
+
+.hero-title,
+.map-title {
+  font-size: clamp(2rem, 4vw, 3.4rem);
+  line-height: 0.95;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent-deep);
+}
+
+.subcopy,
+.map-status {
+  color: var(--muted);
+  max-width: 56ch;
+}
+
+.hero {
+  margin-bottom: 8px;
+}
+
+.chat-log {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  overflow: auto;
+  padding: 8px 4px 8px 0;
+  margin: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.message {
+  max-width: 85%;
+  padding: 14px 16px;
+  border-radius: 22px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  animation: fadeIn 220ms ease;
+}
+
+.message.user {
+  align-self: flex-end;
+  color: #f8f4ea;
+  background: var(--user);
+  border-bottom-right-radius: 6px;
+}
+
+.message.assistant {
+  align-self: flex-start;
+  background: var(--assistant);
+  border: 1px solid rgba(198, 126, 16, 0.14);
+  border-bottom-left-radius: 6px;
+}
+
+.chat-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: end;
+  margin-top: auto;
+  padding-top: 8px;
+  background: linear-gradient(180deg, rgba(225, 211, 182, 0), rgba(225, 211, 182, 0.92) 28%);
+}
+
+.chat-form textarea {
+  resize: none;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 16px 18px;
+  font: inherit;
+  min-height: 62px;
+  background: var(--panel-strong);
+  color: var(--ink);
+}
+
+.chat-form button {
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  color: #fff7ea;
+  font: inherit;
+  padding: 15px 22px;
+  cursor: pointer;
+}
+
+.chat-form button:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.map-panel {
+  min-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.map-card,
+.insight-card {
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+}
+
+.map-card {
+  min-height: 48vh;
+}
+
+#map {
+  flex: 1;
+  min-height: 420px;
+  border-radius: 22px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+}
+
+.distance-badge-wrapper {
+  background: transparent;
+  border: 0;
+}
+
+.distance-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 54px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #3d5f82;
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: 0 6px 18px rgba(61, 95, 130, 0.28);
+}
+
+.trace-list,
+.summary-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.trace-item,
+.summary-list li {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 12px 14px;
+  background: rgba(247, 240, 223, 0.82);
+  list-style: none;
+}
+
+.trace-agent {
+  display: inline-block;
+  margin-bottom: 6px;
+  font-size: 0.76rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent-deep);
+}
+
+.trace-action {
+  font-weight: 700;
+  margin-right: 6px;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 960px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .chat-panel {
+    height: auto;
+    min-height: 0;
+  }
+
+  .chat-log {
+    max-height: none;
+    min-height: 340px;
+  }
+
+  #map {
+    min-height: 360px;
+  }
+}
