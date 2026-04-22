@@ -8,3 +8,10 @@ __pycache__/
 *.json
 *.csv
 *.pdf
+
+# Local notebooks and generated exports not meant for git
+business_output.csv
+json_to_csv.ipynb
+nyc_restaurant_agent_colab.ipynb
+nyc_restaurant_agent_colab(run on colab).ipynb
+places_restaurant_chatbot_colab.ipynb
