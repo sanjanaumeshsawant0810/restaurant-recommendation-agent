@@ -18,6 +18,7 @@ from places_restaurant_chatbot import (
     normalize_text,
     place_details,
     places_text_search,
+    verify_dish_availability,
 )
 
 
@@ -544,6 +545,8 @@ def is_place_open_at_requested_time(details: dict, state: ConversationState) -> 
 
 def unmet_criteria_for_place(place: dict, state: ConversationState) -> List[str]:
     unmet = []
+    if state.dish and place.get("menu_verification", {}).get("status") == "not_verified":
+        unmet.append(f"could not verify {state.dish} from the restaurant website menu")
     if state.max_price_level is not None and place.get("price_level") is not None and int(place["price_level"]) > int(state.max_price_level):
         unmet.append(
             f"price level {format_price_level(place['price_level'])} is above your preferred {format_price_level(state.max_price_level)}"
@@ -567,6 +570,84 @@ def unmet_criteria_for_place(place: dict, state: ConversationState) -> List[str]
         if target_dt is not None:
             unmet.append(f"not likely to be open around {target_dt.strftime('%-I:%M %p').lower()} on {target_dt.strftime('%A')}")
     return unmet
+
+
+def verification_status_for_place(place: dict, state: ConversationState) -> str:
+    menu_verification = place.get("menu_verification") or {}
+    if state.dish:
+        if menu_verification.get("verified"):
+            return "verified"
+        if menu_verification.get("status") == "not_verified":
+            return "not_verified"
+    if place.get("unmet_criteria"):
+        return "likely"
+    return "likely"
+
+
+def confidence_score_for_place(place: dict, state: ConversationState) -> int:
+    score = 45
+    menu_verification = place.get("menu_verification") or {}
+
+    if state.dish:
+        if menu_verification.get("verified"):
+            score += 30
+        elif menu_verification.get("status") == "not_verified":
+            score -= 20
+        elif menu_verification.get("status") in {"website_unreachable", "no_website"}:
+            score -= 10
+
+    if place.get("open_now") is True:
+        score += 10
+    elif state.when == "now" and place.get("open_now") is False:
+        score -= 20
+
+    if state.when == "later":
+        if place.get("open_at_requested_time") is True:
+            score += 12
+        elif place.get("open_at_requested_time") is False:
+            score -= 18
+
+    if state.max_price_level is not None and place.get("price_level") is not None:
+        if int(place["price_level"]) <= int(state.max_price_level):
+            score += 5
+        else:
+            score -= 10
+
+    if state.min_rating is not None and place.get("rating") is not None:
+        if float(place["rating"]) >= float(state.min_rating):
+            score += 6
+        else:
+            score -= 8
+
+    if state.travel_minutes and place.get("estimated_travel_minutes") is not None:
+        if place["estimated_travel_minutes"] <= state.travel_minutes:
+            score += 8
+        elif place["estimated_travel_minutes"] - state.travel_minutes <= TRAVEL_TIME_LEEWAY_MINUTES:
+            score += 2
+        else:
+            score -= 10
+
+    return max(0, min(100, score))
+
+
+def confidence_label(score: int) -> str:
+    if score >= 80:
+        return "high confidence"
+    if score >= 60:
+        return "medium confidence"
+    return "low confidence"
+
+
+def fit_label_for_place(place: dict) -> str:
+    status = place.get("verification_status")
+    unmet = place.get("unmet_criteria") or []
+    if status == "verified" and not unmet:
+        return "fits your criteria well."
+    if status == "not_verified":
+        return "looks relevant, but does not fully fit your criteria."
+    if unmet:
+        return "does not fully fit your criteria."
+    return "looks like a likely match, but is not fully verified."
 
 
 class IntentAgent:
@@ -783,7 +864,7 @@ class RetrievalAgent:
                 (
                     "id,displayName,formattedAddress,location,rating,userRatingCount,priceLevel,"
                     "primaryTypeDisplayName,currentOpeningHours,regularOpeningHours,reviewSummary,editorialSummary,"
-                    "googleMapsUri"
+                    "googleMapsUri,websiteUri"
                 ),
             )
             location = details.get("location", {})
@@ -809,6 +890,7 @@ class RetrievalAgent:
 
             raw_price_level = details.get("priceLevel")
             price_level = raw_price_level if isinstance(raw_price_level, int) else None
+            menu_verification = verify_dish_availability(details.get("websiteUri"), state.dish)
             if state.max_price_level is not None and price_level is not None and price_level > state.max_price_level:
                 continue
 
@@ -824,6 +906,11 @@ class RetrievalAgent:
                 score += max(0.0, 3.0 - abs(preferred_center - estimated_travel_minutes) / 5.0)
             if state.max_price_level is not None and price_level is not None:
                 score += max(0.0, 1.5 - abs(state.max_price_level - price_level) * 0.75)
+            if state.dish:
+                if menu_verification.get("verified"):
+                    score += 3.0
+                elif menu_verification.get("status") == "not_verified":
+                    score -= 2.0
             if state.when == "later":
                 if open_at_requested_time is True:
                     score += 2.0
@@ -844,6 +931,8 @@ class RetrievalAgent:
                 "open_at_requested_time": open_at_requested_time,
                 "summary": details.get("reviewSummary", {}).get("text")
                 or details.get("editorialSummary", {}).get("text"),
+                "website_url": details.get("websiteUri"),
+                "menu_verification": menu_verification,
                 "google_maps_url": details.get("googleMapsUri"),
                 "directions_url": build_directions_url(
                     state.user_location,
@@ -856,6 +945,9 @@ class RetrievalAgent:
             }
             result["unmet_criteria"] = unmet_criteria_for_place(result, state)
             result["matched_criteria"] = self._matched_criteria(result, state)
+            result["verification_status"] = verification_status_for_place(result, state)
+            result["confidence_score"] = confidence_score_for_place(result, state)
+            result["confidence_label"] = confidence_label(result["confidence_score"])
             results.append(result)
 
         ranked_results = sorted(results, key=lambda item: item["score"], reverse=True)
@@ -896,6 +988,8 @@ class RetrievalAgent:
         matched = []
         if state.cuisine:
             matched.append(f"fits the {state.cuisine} intent")
+        if state.dish and place.get("menu_verification", {}).get("verified"):
+            matched.append(place["menu_verification"]["label"])
         if state.when == "now" and place.get("open_now") is True:
             matched.append("open right now")
         if state.when == "later" and place.get("open_at_requested_time") is True:
@@ -947,12 +1041,23 @@ class ResponseAgent:
             line = f"{idx}. {place['name']} - {place['address']}"
             if detail_bits:
                 line += f" ({', '.join(detail_bits)})"
-            if not place["unmet_criteria"]:
-                line += "\n   Fit: fits your criteria well."
+            line += f"\n   Confidence: {place.get('confidence_label', 'medium confidence')} ({place.get('confidence_score', 0)}/100)."
+            status = place.get("verification_status")
+            if status == "verified":
+                line += "\n   Verification: verified."
+            elif status == "not_verified":
+                line += "\n   Verification: not verified."
+            else:
+                line += "\n   Verification: likely match, but not fully verified."
+            line += f"\n   Fit: {fit_label_for_place(place)}"
+            verification = place.get("menu_verification") or {}
+            if state.dish and verification.get("label"):
+                line += f"\n   Menu check: {verification['label']}."
+                if verification.get("evidence"):
+                    line += f" Evidence: {verification['evidence']}"
             if place["matched_criteria"]:
                 line += f"\n   Matches: {', '.join(place['matched_criteria'])}."
             if place["unmet_criteria"]:
-                line += f"\n   Fit: does not fully fit your criteria."
                 line += f"\n   Does not fully follow: {', '.join(place['unmet_criteria'])}."
             if place["summary"]:
                 line += f"\n   Why it still stands out: {place['summary']}"

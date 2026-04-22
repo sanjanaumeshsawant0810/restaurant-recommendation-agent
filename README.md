@@ -1,6 +1,6 @@
 # Agentic Dining Assistant
 
-An agentic AI restaurant recommendation product with a runnable web interface. The system asks for missing user constraints, uses Gemini for conversational slot-filling and response generation when configured, grounds recommendations in live Google Places data, explains why each place matches or misses the user request, and displays the results on a map.
+An agentic AI restaurant recommendation product with a runnable web interface. The system asks for missing user constraints, uses Gemini for conversational slot-filling and response generation when configured, grounds recommendations in live Google Places data, verifies requested dishes against restaurant website menus when possible, explains why each place matches or misses the user request, and displays the results on a map.
 
 ## Why this fits the course
 
@@ -27,6 +27,7 @@ That gives you:
 - Live map view with directions links
 - Uses place names, decimal coordinates, or DMS coordinates for location input
 - Considers travel-time preferences
+- Tries to verify requested dishes from restaurant websites, menu PDFs, and optional OCR on image menus
 - Shows matched criteria and unmet criteria for each place
 
 ## Architecture
@@ -59,6 +60,7 @@ Then open:
 `http://127.0.0.1:5001`
 
 If `GEMINI_API_KEY` is missing, the app still runs with the rule-based fallback path. If `GOOGLE_MAPS_API_KEY` is missing, live place search will fail.
+If you want OCR for image-based menus, install the Tesseract system binary as well. Without it, the app still verifies HTML pages and PDF menus.
 
 ## Demo ideas
 

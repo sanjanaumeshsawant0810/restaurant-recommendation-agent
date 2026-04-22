@@ -1,11 +1,25 @@
 import json
+import io
 import math
 import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urljoin
 
 import requests
+from bs4 import BeautifulSoup
+from pypdf import PdfReader
+
+try:
+    import pytesseract
+except ImportError:
+    pytesseract = None
+
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
 
 try:
     from google import genai
@@ -62,6 +76,13 @@ AMBIENCE_KEYWORDS = {
     "quiet": ["quiet", "peaceful"],
 }
 
+SCRAPER_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+MENU_VERIFICATION_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
 
 def normalize_text(text: str) -> str:
     text = str(text or "").strip().lower()
@@ -90,6 +111,211 @@ def extract_json_object(text: str) -> Dict[str, Any]:
     if start == -1 or end == -1 or end < start:
         raise ValueError(f"Could not find JSON object in Gemini response: {cleaned}")
     return json.loads(cleaned[start : end + 1])
+
+
+def _requests_session() -> requests.Session:
+    session = requests.Session()
+    session.headers.update({"User-Agent": SCRAPER_USER_AGENT})
+    return session
+
+
+def _extract_visible_text(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    return normalize_text(soup.get_text(" ", strip=True))
+
+
+def _candidate_menu_links(base_url: str, html: str) -> List[Tuple[str, str]]:
+    soup = BeautifulSoup(html, "html.parser")
+    candidates: List[Tuple[str, str]] = []
+    keywords = [
+        "menu",
+        "food",
+        "dinner",
+        "lunch",
+        "brunch",
+        "breakfast",
+        "dessert",
+        "wine",
+        "drinks",
+        "pdf",
+        "order",
+    ]
+    for link in soup.find_all("a", href=True):
+        href = str(link.get("href") or "").strip()
+        label = " ".join(link.stripped_strings)
+        target = urljoin(base_url, href)
+        haystack = normalize_text(f"{label} {href}")
+        if any(keyword in haystack for keyword in keywords):
+            candidates.append((target, label or href))
+
+    deduped: List[Tuple[str, str]] = []
+    seen = set()
+    for target, label in candidates:
+        if target not in seen:
+            seen.add(target)
+            deduped.append((target, label))
+        if len(deduped) >= 6:
+            break
+    return deduped
+
+
+def _dish_pattern(dish: str) -> re.Pattern[str]:
+    cleaned = normalize_text(dish)
+    tokens = [re.escape(token) for token in cleaned.split() if token]
+    if not tokens:
+        return re.compile(r"$a")
+    return re.compile(r"\b" + r"\s+".join(tokens) + r"\b", re.IGNORECASE)
+
+
+def _find_dish_in_text(text: str, dish: str) -> Optional[str]:
+    pattern = _dish_pattern(dish)
+    match = pattern.search(normalize_text(text))
+    if not match:
+        return None
+    start = max(0, match.start() - 60)
+    end = min(len(text), match.end() + 60)
+    return text[start:end].strip()
+
+
+def _extract_pdf_text(content: bytes) -> str:
+    reader = PdfReader(io.BytesIO(content))
+    pages = []
+    for page in reader.pages[:20]:
+        pages.append(page.extract_text() or "")
+    return "\n".join(pages)
+
+
+def _extract_image_text(content: bytes) -> Optional[str]:
+    if Image is None or pytesseract is None:
+        return None
+    try:
+        image = Image.open(io.BytesIO(content))
+        return pytesseract.image_to_string(image)
+    except Exception:
+        return None
+
+
+def verify_dish_availability(website_url: Optional[str], dish: Optional[str]) -> Dict[str, Any]:
+    if not website_url:
+        return {
+            "status": "no_website",
+            "label": "no website available for verification",
+            "verified": False,
+            "source_url": None,
+            "evidence": None,
+        }
+
+    cleaned_dish = normalize_text(dish or "")
+    if not cleaned_dish:
+        return {
+            "status": "no_dish_requested",
+            "label": "no dish verification needed",
+            "verified": False,
+            "source_url": website_url,
+            "evidence": None,
+        }
+
+    cache_key = (website_url, cleaned_dish)
+    if cache_key in MENU_VERIFICATION_CACHE:
+        return MENU_VERIFICATION_CACHE[cache_key]
+
+    session = _requests_session()
+    try:
+        response = session.get(website_url, timeout=20)
+        response.raise_for_status()
+    except Exception as exc:
+        result = {
+            "status": "website_unreachable",
+            "label": f"could not verify from the website ({exc})",
+            "verified": False,
+            "source_url": website_url,
+            "evidence": None,
+        }
+        MENU_VERIFICATION_CACHE[cache_key] = result
+        return result
+
+    html = response.text
+    visible_text = _extract_visible_text(html)
+    evidence = _find_dish_in_text(visible_text, cleaned_dish)
+    if evidence:
+        result = {
+            "status": "verified_html",
+            "label": f"verified on the website for {cleaned_dish}",
+            "verified": True,
+            "source_url": website_url,
+            "evidence": evidence,
+        }
+        MENU_VERIFICATION_CACHE[cache_key] = result
+        return result
+
+    for target_url, _label in _candidate_menu_links(website_url, html):
+        try:
+            linked_response = session.get(target_url, timeout=20)
+            linked_response.raise_for_status()
+        except Exception:
+            continue
+
+        lowered = target_url.lower()
+        content_type = (linked_response.headers.get("Content-Type") or "").lower()
+        if ".pdf" in lowered or "pdf" in content_type:
+            try:
+                pdf_text = _extract_pdf_text(linked_response.content)
+            except Exception:
+                continue
+            evidence = _find_dish_in_text(pdf_text, cleaned_dish)
+            if evidence:
+                result = {
+                    "status": "verified_pdf",
+                    "label": f"verified from a PDF menu for {cleaned_dish}",
+                    "verified": True,
+                    "source_url": target_url,
+                    "evidence": evidence,
+                }
+                MENU_VERIFICATION_CACHE[cache_key] = result
+                return result
+            continue
+
+        if any(image_ext in lowered for image_ext in [".png", ".jpg", ".jpeg", ".webp"]) or content_type.startswith("image/"):
+            image_text = _extract_image_text(linked_response.content)
+            if image_text is None:
+                continue
+            evidence = _find_dish_in_text(image_text, cleaned_dish)
+            if evidence:
+                result = {
+                    "status": "verified_image_ocr",
+                    "label": f"verified from an image menu via OCR for {cleaned_dish}",
+                    "verified": True,
+                    "source_url": target_url,
+                    "evidence": evidence,
+                }
+                MENU_VERIFICATION_CACHE[cache_key] = result
+                return result
+            continue
+
+        linked_text = _extract_visible_text(linked_response.text)
+        evidence = _find_dish_in_text(linked_text, cleaned_dish)
+        if evidence:
+            result = {
+                "status": "verified_menu_page",
+                "label": f"verified from a menu page for {cleaned_dish}",
+                "verified": True,
+                "source_url": target_url,
+                "evidence": evidence,
+            }
+            MENU_VERIFICATION_CACHE[cache_key] = result
+            return result
+
+    result = {
+        "status": "not_verified",
+        "label": f"could not verify {cleaned_dish} from the restaurant website",
+        "verified": False,
+        "source_url": website_url,
+        "evidence": None,
+    }
+    MENU_VERIFICATION_CACHE[cache_key] = result
+    return result
 
 
 APP_STATE_SYSTEM_PROMPT = """
@@ -142,6 +368,10 @@ Write a concise recommendation list using only the provided data.
 - Use numbered items like 1., 2., 3.
 - For every recommendation, explicitly say whether it fits the user's criteria well or does not fully fit.
 - Mention distance, travel time, rating, and open-now status when available.
+- If a dish was requested, mention whether it was verified from the restaurant website, PDF menu, or OCR menu image.
+- Use the provided verification_status and confidence_label. Do not claim a dish is definitely available unless the status is verified.
+- If verification_status is likely, say it is a likely match or not fully verified.
+- If verification_status is not_verified, say that clearly.
 - If a place misses a user preference, mention that briefly.
 - If a place is still good but within 10 minutes beyond the user's travel preference, say that clearly instead of rejecting it harshly.
 - If the user asked for more results, keep both strong matches and weaker matches, but clearly label the weaker ones.
@@ -281,7 +511,9 @@ def analyze_app_turn_with_gemini(state: Dict[str, Any], message: str) -> Optiona
                 "location_mode": state.get("location_mode"),
                 "manual_location": state.get("manual_location"),
                 "travel_mode": state.get("travel_mode"),
+                "min_travel_minutes": state.get("min_travel_minutes"),
                 "travel_minutes": state.get("travel_minutes"),
+                "max_price_level": state.get("max_price_level"),
                 "min_rating": state.get("min_rating"),
             },
             ensure_ascii=False,
@@ -306,7 +538,9 @@ def build_final_response_with_gemini(state: Dict[str, Any], results: List[Dict[s
             "location_mode": state.get("location_mode"),
             "manual_location": state.get("manual_location"),
             "travel_mode": state.get("travel_mode"),
+            "min_travel_minutes": state.get("min_travel_minutes"),
             "travel_minutes": state.get("travel_minutes"),
+            "max_price_level": state.get("max_price_level"),
             "min_rating": state.get("min_rating"),
         },
         "results": results[:limit],
