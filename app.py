@@ -1,8 +1,10 @@
+import json
 import os
 import re
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -26,6 +28,9 @@ app = Flask(__name__)
 
 TRAVEL_TIME_LEEWAY_MINUTES = 10
 APP_TIMEZONE = ZoneInfo("America/New_York")
+DATA_DIR = Path(__file__).resolve().parent / "data"
+SESSION_STORE_PATH = DATA_DIR / "chat_sessions.json"
+DEFAULT_ASSISTANT_MESSAGE = "If there is something you want to eat, I’ll help you find it."
 
 
 TOP_K_PATTERNS = {
@@ -72,6 +77,9 @@ VAGUE_FOOD_INTENTS = {
 
 @dataclass
 class ConversationState:
+    title: str = "New chat"
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
     when: Optional[str] = None
     cuisine: Optional[str] = None
     dish: Optional[str] = None
@@ -88,6 +96,7 @@ class ConversationState:
     requested_hour: Optional[int] = None
     requested_minute: Optional[int] = None
     llm_next_question: Optional[str] = None
+    messages: List[dict] = field(default_factory=list)
     last_results: List[dict] = field(default_factory=list)
     last_limit: int = 5
     conversation_turns: int = 0
@@ -104,9 +113,88 @@ SESSIONS: Dict[str, ConversationState] = {}
 SESSIONS_LOCK = Lock()
 
 
+def now_iso() -> str:
+    return datetime.now(APP_TIMEZONE).isoformat()
+
+
+def build_session_title(message: str) -> str:
+    cleaned = " ".join((message or "").strip().split())
+    if not cleaned:
+        return "New chat"
+    return cleaned[:60] + ("..." if len(cleaned) > 60 else "")
+
+
+def session_to_dict(state: ConversationState) -> Dict[str, Any]:
+    return asdict(state)
+
+
+def session_from_dict(data: Dict[str, Any]) -> ConversationState:
+    state = ConversationState()
+    for field_name in state.__dataclass_fields__:
+        if field_name in data:
+            setattr(state, field_name, data[field_name])
+    if not state.created_at:
+        state.created_at = now_iso()
+    if not state.updated_at:
+        state.updated_at = state.created_at
+    if not state.messages:
+        state.messages = [{"role": "assistant", "text": DEFAULT_ASSISTANT_MESSAGE}]
+    return state
+
+
+def append_message(state: ConversationState, role: str, text: str) -> None:
+    state.messages.append({"role": role, "text": text})
+    state.updated_at = now_iso()
+
+
+def save_sessions_to_disk() -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    payload = {session_id: session_to_dict(state) for session_id, state in SESSIONS.items()}
+    SESSION_STORE_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def load_sessions_from_disk() -> None:
+    if not SESSION_STORE_PATH.exists():
+        return
+    try:
+        raw = json.loads(SESSION_STORE_PATH.read_text())
+    except Exception:
+        return
+    if not isinstance(raw, dict):
+        return
+    for session_id, payload in raw.items():
+        if isinstance(payload, dict):
+            SESSIONS[session_id] = session_from_dict(payload)
+
+
+def session_summary(session_id: str, state: ConversationState) -> Dict[str, Any]:
+    return {
+        "session_id": session_id,
+        "title": state.title,
+        "updated_at": state.updated_at,
+        "created_at": state.created_at,
+    }
+
+
+def initialize_session_state(state: ConversationState) -> ConversationState:
+    if not state.created_at:
+        state.created_at = now_iso()
+    if not state.updated_at:
+        state.updated_at = state.created_at
+    if not state.title:
+        state.title = "New chat"
+    if not state.messages:
+        state.messages = [{"role": "assistant", "text": DEFAULT_ASSISTANT_MESSAGE}]
+    return state
+
+
 def get_state(session_id: str) -> ConversationState:
     with SESSIONS_LOCK:
-        return SESSIONS.setdefault(session_id, ConversationState())
+        state = SESSIONS.setdefault(session_id, ConversationState())
+        return initialize_session_state(state)
+
+
+load_sessions_from_disk()
 
 
 def parse_top_k_request(message: str) -> Optional[int]:
@@ -1075,17 +1163,23 @@ class CoordinatorAgent:
 
     def handle_turn(
         self,
+        session_id: str,
         state: ConversationState,
         message: str,
         browser_location: Optional[dict],
     ) -> Dict[str, Any]:
         traces: List[AgentTrace] = []
+        append_message(state, "user", message)
+        if state.title == "New chat" and message.strip():
+            state.title = build_session_title(message)
 
         top_k_request = parse_top_k_request(message)
         if top_k_request and state.last_results:
             results, retrieval_traces = self.retrieval_agent.run(state, top_k_request)
             traces.extend(retrieval_traces)
-            return self._payload(state, self.response_agent.build_reply(state, results, top_k_request), results, traces)
+            reply = self.response_agent.build_reply(state, results, top_k_request)
+            append_message(state, "assistant", reply)
+            return self._payload(session_id, state, reply, results, traces)
 
         traces.extend(self.intent_agent.run(state, message, browser_location))
         question = self.clarification_agent.next_question(state)
@@ -1093,16 +1187,19 @@ class CoordinatorAgent:
         if not self.retrieval_agent.ready_for_search(state):
             reply = question or "Tell me a little more so I can narrow it down."
             traces.append(AgentTrace("Clarification Agent", "question", reply))
-            return self._payload(state, reply, [], traces)
+            append_message(state, "assistant", reply)
+            return self._payload(session_id, state, reply, [], traces)
 
         results, retrieval_traces = self.retrieval_agent.run(state, 5)
         traces.extend(retrieval_traces)
         reply = self.response_agent.build_reply(state, results, 5)
         traces.append(AgentTrace("Response Agent", "compose", "Built the final ranked recommendation message."))
-        return self._payload(state, reply, results, traces)
+        append_message(state, "assistant", reply)
+        return self._payload(session_id, state, reply, results, traces)
 
     def _payload(
         self,
+        session_id: str,
         state: ConversationState,
         reply: str,
         results: List[dict],
@@ -1111,9 +1208,11 @@ class CoordinatorAgent:
         return {
             "reply": reply,
             "results": results,
+            "messages": state.messages,
             "user_location": state.user_location,
             "needs_map": bool(results and state.user_location),
             "state": asdict(state),
+            "session": session_summary(session_id, state),
             "agent_trace": [asdict(trace) for trace in traces],
             "project_summary": {
                 "title": "Agentic Dining Assistant",
@@ -1138,8 +1237,49 @@ def index():
 @app.post("/api/session")
 def create_session():
     session_id = uuid.uuid4().hex
-    get_state(session_id)
-    return jsonify({"session_id": session_id})
+    state = get_state(session_id)
+    state.created_at = now_iso()
+    state.updated_at = state.created_at
+    state.title = "New chat"
+    state.messages = [{"role": "assistant", "text": DEFAULT_ASSISTANT_MESSAGE}]
+    with SESSIONS_LOCK:
+        save_sessions_to_disk()
+    return jsonify({"session_id": session_id, "session": session_summary(session_id, state), "messages": state.messages})
+
+
+@app.get("/api/sessions")
+def list_sessions():
+    with SESSIONS_LOCK:
+        sessions = [session_summary(session_id, state) for session_id, state in SESSIONS.items()]
+    sessions.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
+    return jsonify({"sessions": sessions})
+
+
+@app.get("/api/session/<session_id>")
+def get_session(session_id: str):
+    with SESSIONS_LOCK:
+        state = SESSIONS.get(session_id)
+    if state is None:
+        return jsonify({"error": "Session not found"}), 404
+    return jsonify(
+        {
+            "session_id": session_id,
+            "session": session_summary(session_id, state),
+            "messages": state.messages,
+            "results": state.last_results,
+            "user_location": state.user_location,
+            "agent_trace": [],
+            "project_summary": {
+                "title": "Agentic Dining Assistant",
+                "architecture": [
+                    "Intent Agent: extracts slots like cuisine, time, location, and travel preference.",
+                    "Clarification Agent: asks only for missing information before search.",
+                    "Retrieval Agent: grounds results in live Google Places data and ranks candidates.",
+                    "Response Agent: explains why each recommendation matches or misses criteria.",
+                ],
+            },
+        }
+    )
 
 
 @app.post("/api/chat")
@@ -1157,7 +1297,10 @@ def chat():
     state = get_state(session_id)
 
     try:
-        return jsonify(coordinator.handle_turn(state, message, browser_location))
+        response_payload = coordinator.handle_turn(session_id, state, message, browser_location)
+        with SESSIONS_LOCK:
+            save_sessions_to_disk()
+        return jsonify(response_payload)
     except Exception as exc:
         return jsonify(
             {

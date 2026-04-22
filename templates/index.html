@@ -16,27 +16,48 @@
   <body>
     <main class="app-shell">
       <section class="chat-panel">
-        <header class="hero">
-          <p class="eyebrow hero-title">Restaurant Recommender</p>
-          <h1>Find a place that fits what you want to eat.</h1>
-          <p class="subcopy">
-            Tell me what you want to eat, when you want to eat, where you are,
-            and how far you're willing to travel for it.
-          </p>
-        </header>
+        <div class="chat-layout">
+          <button id="chat-drawer-toggle" class="chat-drawer-toggle" type="button" aria-expanded="false" aria-controls="session-sidebar">
+            Chats
+          </button>
+          <div id="chat-drawer-backdrop" class="chat-drawer-backdrop"></div>
+          <aside id="session-sidebar" class="session-sidebar">
+            <div class="session-sidebar-header">
+              <div class="session-sidebar-heading">
+                <p class="eyebrow">Chats</p>
+                <button id="chat-drawer-close" class="chat-drawer-close" type="button" aria-label="Close chats">
+                  Close
+                </button>
+              </div>
+              <button id="new-chat-button" class="new-chat-button" type="button">New Chat</button>
+            </div>
+            <div id="session-list" class="session-list" aria-label="Saved chats"></div>
+          </aside>
 
-        <div id="chat-log" class="chat-log" aria-live="polite"></div>
+          <div class="chat-main">
+            <header class="hero">
+              <p class="eyebrow hero-title">Restaurant Recommender</p>
+              <h1>Find a place that fits what you want to eat.</h1>
+              <p class="subcopy">
+                Tell me what you want to eat, when you want to eat, where you are,
+                and how far you're willing to travel for it.
+              </p>
+            </header>
 
-        <form id="chat-form" class="chat-form">
-          <textarea
-            id="chat-input"
-            name="message"
-            rows="1"
-            placeholder="I want pizza near downtown New Brunswick and I can drive 15 minutes."
-            required
-          ></textarea>
-          <button id="send-button" type="submit">Send</button>
-        </form>
+            <div id="chat-log" class="chat-log" aria-live="polite"></div>
+
+            <form id="chat-form" class="chat-form">
+              <textarea
+                id="chat-input"
+                name="message"
+                rows="1"
+                placeholder="I want pizza near downtown New Brunswick and I can drive 15 minutes."
+                required
+              ></textarea>
+              <button id="send-button" type="submit">Send</button>
+            </form>
+          </div>
+        </div>
       </section>
 
       <aside class="map-panel">

@@ -2,11 +2,18 @@ const chatLog = document.getElementById("chat-log");
 const chatForm = document.getElementById("chat-form");
 const chatInput = document.getElementById("chat-input");
 const sendButton = document.getElementById("send-button");
+const newChatButton = document.getElementById("new-chat-button");
+const chatDrawerToggle = document.getElementById("chat-drawer-toggle");
+const chatDrawerBackdrop = document.getElementById("chat-drawer-backdrop");
+const chatDrawerClose = document.getElementById("chat-drawer-close");
+const sessionSidebar = document.getElementById("session-sidebar");
 const mapStatus = document.getElementById("map-status");
 const agentTrace = document.getElementById("agent-trace");
 const projectSummary = document.getElementById("project-summary");
+const sessionList = document.getElementById("session-list");
 
 let sessionId = null;
+let sessions = [];
 let map = null;
 let markers = [];
 let routeLines = [];
@@ -21,12 +28,68 @@ const userLocationIcon = L.icon({
   shadowSize: [41, 41],
 });
 
+function setDrawerOpen(isOpen) {
+  sessionSidebar.classList.toggle("open", isOpen);
+  chatDrawerBackdrop.classList.toggle("open", isOpen);
+  chatDrawerToggle.setAttribute("aria-expanded", String(isOpen));
+}
+
+async function requestJson(url, options = {}) {
+  const response = await fetch(url, options);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || data.message || `Request failed with status ${response.status}`);
+  }
+  return data;
+}
+
 function addMessage(role, text) {
   const node = document.createElement("div");
   node.className = `message ${role}`;
   node.textContent = text;
   chatLog.appendChild(node);
   chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function renderMessages(messages = []) {
+  chatLog.innerHTML = "";
+  messages.forEach((message) => addMessage(message.role, message.text));
+}
+
+function formatSessionTimestamp(value) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function renderSessionList() {
+  sessionList.innerHTML = "";
+  if (!sessions.length) {
+    sessionList.innerHTML = "<div class='session-empty'>No saved chats yet.</div>";
+    return;
+  }
+
+  sessions.forEach((session) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `session-item${session.session_id === sessionId ? " active" : ""}`;
+    button.innerHTML = `
+      <div class="session-title">${session.title || "New chat"}</div>
+      <div class="session-meta">${formatSessionTimestamp(session.updated_at)}</div>
+    `;
+    button.addEventListener("click", () => loadSession(session.session_id));
+    sessionList.appendChild(button);
+  });
 }
 
 function renderAgentTrace(traceItems = []) {
@@ -174,28 +237,49 @@ async function getBrowserLocation() {
 }
 
 async function createSession() {
-  const response = await fetch("/api/session", { method: "POST" });
-  const data = await response.json();
+  const data = await requestJson("/api/session", { method: "POST" });
   sessionId = data.session_id;
+  await refreshSessions();
+  renderMessages(data.messages || []);
+  clearMarkers();
+  renderAgentTrace([]);
+  renderProjectSummary({});
+  mapStatus.textContent = "The map will update after the backend finds places.";
+}
+
+async function refreshSessions() {
+  const data = await requestJson("/api/sessions");
+  sessions = data.sessions || [];
+  renderSessionList();
+}
+
+async function loadSession(targetSessionId) {
+  const data = await requestJson(`/api/session/${targetSessionId}`);
+  sessionId = targetSessionId;
+  renderMessages(data.messages || []);
+  updateMap(data.user_location, data.results || []);
+  renderAgentTrace(data.agent_trace || []);
+  renderProjectSummary(data.project_summary || {});
+  await refreshSessions();
+  setDrawerOpen(false);
 }
 
 async function sendMessage(message) {
   sendButton.disabled = true;
-
-  const browserLocation = await getBrowserLocation();
-  const response = await fetch("/api/chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      session_id: sessionId,
-      message,
-      browser_location: browserLocation,
-    }),
-  });
-
-  const data = await response.json();
-  sendButton.disabled = false;
-  return data;
+  try {
+    const browserLocation = await getBrowserLocation();
+    return await requestJson("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: sessionId,
+        message,
+        browser_location: browserLocation,
+      }),
+    });
+  } finally {
+    sendButton.disabled = false;
+  }
 }
 
 chatForm.addEventListener("submit", async (event) => {
@@ -206,26 +290,50 @@ chatForm.addEventListener("submit", async (event) => {
     return;
   }
 
-  addMessage("user", message);
   chatInput.value = "";
 
   try {
     const data = await sendMessage(message);
-    addMessage("assistant", data.reply || "I hit an error.");
+    renderMessages(data.messages || []);
     updateMap(data.user_location, data.results || []);
     renderAgentTrace(data.agent_trace || []);
     renderProjectSummary(data.project_summary || {});
+    await refreshSessions();
   } catch (error) {
     addMessage("assistant", `Something went wrong: ${error.message}`);
   }
 });
 
+newChatButton.addEventListener("click", async () => {
+  await createSession();
+  setDrawerOpen(false);
+});
+
+chatDrawerToggle.addEventListener("click", () => {
+  const isOpen = sessionSidebar.classList.contains("open");
+  setDrawerOpen(!isOpen);
+});
+
+chatDrawerBackdrop.addEventListener("click", () => {
+  setDrawerOpen(false);
+});
+
+chatDrawerClose.addEventListener("click", () => {
+  setDrawerOpen(false);
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    setDrawerOpen(false);
+  }
+});
+
 window.addEventListener("load", async () => {
   initMap();
-  await createSession();
-  addMessage(
-    "assistant",
-    "Tell me what you want to eat. I’ll ask for anything missing, then I’ll show the top 5 by default. Ask for top ten if you want more."
-  );
-  renderAgentTrace([]);
+  await refreshSessions();
+  if (sessions.length) {
+    await loadSession(sessions[0].session_id);
+  } else {
+    await createSession();
+  }
 });
