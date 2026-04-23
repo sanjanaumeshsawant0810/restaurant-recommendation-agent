@@ -26,7 +26,7 @@ from places_restaurant_chatbot import (
 
 app = Flask(__name__)
 
-TRAVEL_TIME_LEEWAY_MINUTES = 10
+TRAVEL_TIME_LEEWAY_MINUTES = 20
 APP_TIMEZONE = ZoneInfo("America/New_York")
 DATA_DIR = Path(__file__).resolve().parent / "data"
 SESSION_STORE_PATH = DATA_DIR / "chat_sessions.json"
@@ -90,7 +90,6 @@ class ConversationState:
     min_travel_minutes: Optional[int] = None
     travel_minutes: Optional[int] = None
     search_radius_meters: Optional[int] = None
-    max_price_level: Optional[int] = None
     min_rating: Optional[float] = None
     requested_day_offset: Optional[int] = None
     requested_hour: Optional[int] = None
@@ -194,6 +193,61 @@ def get_state(session_id: str) -> ConversationState:
         return initialize_session_state(state)
 
 
+def is_place_follow_up_request(message: str) -> bool:
+    cleaned = normalize_text(message)
+    phrases = [
+        "tell me more about",
+        "more about",
+        "more info on",
+        "more info about",
+        "more information on",
+        "more information about",
+        "what about",
+        "details on",
+        "details about",
+        "tell me about",
+        "has ",
+        "does ",
+        "is ",
+        "right",
+    ]
+    return any(phrase in cleaned for phrase in phrases) or "?" in message
+
+
+def find_follow_up_place(message: str, results: List[dict]) -> Optional[dict]:
+    if not results or not is_place_follow_up_request(message):
+        return None
+    cleaned_message = normalize_text(message)
+    for place in results:
+        cleaned_name = normalize_text(place.get("name") or "")
+        if cleaned_name and cleaned_name in cleaned_message:
+            return place
+        if cleaned_name.startswith("the ") and cleaned_name[4:] in cleaned_message:
+            return place
+    return None
+
+
+def exact_reason_summary(place: dict) -> str:
+    unmet = place.get("unmet_criteria") or []
+    if unmet:
+        return unmet[0]
+    matched = place.get("matched_criteria") or []
+    if matched:
+        return matched[0]
+    return "it looks like a possible match, but the evidence is limited"
+
+
+def summary_text(value: Any) -> Optional[str]:
+    if isinstance(value, dict):
+        text = value.get("text")
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+        return None
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
 load_sessions_from_disk()
 
 
@@ -215,41 +269,6 @@ def parse_min_rating(message: str) -> Optional[float]:
         if 1.0 <= value <= 5.0:
             return value
     return None
-
-
-def parse_price_preference(message: str) -> Optional[int]:
-    cleaned = normalize_text(message)
-    if "$$$$" in message:
-        return 4
-    if "$$$" in message:
-        return 3
-    if "$$" in message:
-        return 2
-    if "$" in message:
-        return 1
-
-    patterns = [
-        (1, ["cheap", "budget", "affordable", "inexpensive", "low cost"]),
-        (2, ["moderate", "mid range", "midrange", "reasonable", "not too expensive"]),
-        (3, ["expensive", "upscale", "fancy"]),
-        (4, ["very expensive", "luxury", "high end", "fine dining"]),
-    ]
-    for level, keywords in patterns:
-        if any(keyword in cleaned for keyword in keywords):
-            return level
-
-    match = re.search(r"(?:price|budget|spend|cost)\s*(?:level)?\s*(\d)", cleaned)
-    if match:
-        level = int(match.group(1))
-        if 1 <= level <= 4:
-            return level
-    return None
-
-
-def format_price_level(price_level: Optional[int]) -> Optional[str]:
-    if price_level is None:
-        return None
-    return "$" * max(1, min(price_level, 4))
 
 
 def infer_when(message: str) -> Optional[str]:
@@ -352,17 +371,49 @@ def is_vague_food_request(dish: Optional[str]) -> bool:
 
 def infer_dish(message: str) -> Optional[str]:
     cleaned = normalize_text(message)
+    if not cleaned:
+        return None
+
+    non_food_markers = [
+        "price",
+        "budget",
+        "under $",
+        "under $$",
+        "under $$$",
+        "under $$$$",
+        "show me",
+        "top 10",
+        "top ten",
+        "open at",
+        "tomorrow",
+        "afternoon",
+        "evening",
+        "more about",
+        "tell me more",
+        "details about",
+        "is it",
+        "is there",
+        "open now",
+        "get there",
+        "there by",
+    ]
+    if any(marker in cleaned for marker in non_food_markers):
+        return None
+
     candidates = [
-        r"i want to eat (.+)",
-        r"i want (.+)",
+        r"i want to (?:have|eat|drink|try)\s+(.+?)(?:\s+\bnear\b|\s+\bin\b|\s+\bat\b|\s+\bwith\b|\s+\band\b|$)",
+        r"i want to eat (.+?)(?:\s+\bnear\b|\s+\bin\b|\s+\bat\b|\s+\bwith\b|\s+\band\b|$)",
+        r"i want (.+?)(?:\s+\bnear\b|\s+\bin\b|\s+\bat\b|\s+\bwith\b|\s+\band\b|$)",
         r"i crave (.+)",
-        r"eat (.+)",
+        r"eat (.+?)(?:\s+\bnear\b|\s+\bin\b|\s+\bat\b|\s+\bwith\b|\s+\band\b|$)",
     ]
     for pattern in candidates:
         match = re.search(pattern, cleaned)
         if match:
-            return match.group(1).strip(" .")
-    if len(cleaned.split()) <= 4:
+            value = match.group(1).strip(" .")
+            if value and value not in {"under", "over", "price", "budget", "there"}:
+                return value
+    if len(cleaned.split()) <= 4 and cleaned not in {"under", "over", "there"}:
         return cleaned
     return None
 
@@ -635,10 +686,6 @@ def unmet_criteria_for_place(place: dict, state: ConversationState) -> List[str]
     unmet = []
     if state.dish and place.get("menu_verification", {}).get("status") == "not_verified":
         unmet.append(f"could not verify {state.dish} from the restaurant website menu")
-    if state.max_price_level is not None and place.get("price_level") is not None and int(place["price_level"]) > int(state.max_price_level):
-        unmet.append(
-            f"price level {format_price_level(place['price_level'])} is above your preferred {format_price_level(state.max_price_level)}"
-        )
     if state.min_rating is not None and place.get("rating") is not None and float(place["rating"]) < float(state.min_rating):
         unmet.append(f"rating below your minimum ({state.min_rating})")
     if state.travel_minutes and place.get("estimated_travel_minutes") and place["estimated_travel_minutes"] > state.travel_minutes:
@@ -694,12 +741,6 @@ def confidence_score_for_place(place: dict, state: ConversationState) -> int:
             score += 12
         elif place.get("open_at_requested_time") is False:
             score -= 18
-
-    if state.max_price_level is not None and place.get("price_level") is not None:
-        if int(place["price_level"]) <= int(state.max_price_level):
-            score += 5
-        else:
-            score -= 10
 
     if state.min_rating is not None and place.get("rating") is not None:
         if float(place["rating"]) >= float(state.min_rating):
@@ -763,7 +804,6 @@ class IntentAgent:
                 "travel_mode",
                 "min_travel_minutes",
                 "travel_minutes",
-                "max_price_level",
                 "min_rating",
             ]:
                 value = gemini_result.get(field_name)
@@ -834,6 +874,17 @@ class IntentAgent:
             state.dish = inferred_dish
             traces.append(AgentTrace(self.name, "slot_fill", f"Captured food intent: {state.dish}."))
 
+        if state.manual_location and state.dish:
+            normalized_location = normalize_text(state.manual_location)
+            normalized_dish = normalize_text(state.dish)
+            if normalized_location and (
+                normalized_dish == normalized_location
+                or normalized_location in normalized_dish
+                or normalized_dish in normalized_location
+            ):
+                state.dish = None
+                traces.append(AgentTrace(self.name, "cleanup", "Ignored location text that was mistakenly captured as a dish."))
+
         inferred_cuisine = infer_cuisine_from_dish(state.dish)
         if inferred_cuisine:
             state.cuisine = inferred_cuisine
@@ -862,17 +913,6 @@ class IntentAgent:
             state.min_rating = inferred_rating
             traces.append(AgentTrace(self.name, "slot_fill", f"Captured minimum rating: {inferred_rating}."))
 
-        inferred_price_level = parse_price_preference(message)
-        if inferred_price_level is not None:
-            state.max_price_level = inferred_price_level
-            traces.append(
-                AgentTrace(
-                    self.name,
-                    "slot_fill",
-                    f"Captured price preference: up to {format_price_level(inferred_price_level)}.",
-                )
-            )
-
         if state.location_mode == "manual" and state.manual_location and not state.user_location:
             state.user_location = geocode_location(state.manual_location)
             traces.append(AgentTrace(self.name, "geocode", "Resolved the manual location with Places text search."))
@@ -894,9 +934,9 @@ class ClarificationAgent:
         if not state.location_mode and not state.user_location:
             return "Can I use your current location, or do you want to enter the location manually?"
         if not state.travel_minutes:
+            if state.travel_mode:
+                return "How long are you willing to travel?"
             return "How long are you willing to travel, and is that by walk, public transport, or car?"
-        if state.max_price_level is None:
-            return "What price range are you comfortable with: $, $$, $$$, or $$$$?"
         return None
 
 
@@ -909,7 +949,6 @@ class RetrievalAgent:
             and (state.user_location or state.location_mode)
             and (state.location_mode != "manual" or state.manual_location)
             and state.travel_minutes
-            and state.max_price_level is not None
         )
 
     def run(self, state: ConversationState, limit: int) -> tuple[List[dict], List[AgentTrace]]:
@@ -952,7 +991,7 @@ class RetrievalAgent:
                 (
                     "id,displayName,formattedAddress,location,rating,userRatingCount,priceLevel,"
                     "primaryTypeDisplayName,currentOpeningHours,regularOpeningHours,reviewSummary,editorialSummary,"
-                    "googleMapsUri,websiteUri"
+                    "googleMapsUri,websiteUri,photos"
                 ),
             )
             location = details.get("location", {})
@@ -975,13 +1014,18 @@ class RetrievalAgent:
 
             if state.when == "later" and open_at_requested_time is False:
                 continue
-
-            raw_price_level = details.get("priceLevel")
-            price_level = raw_price_level if isinstance(raw_price_level, int) else None
-            menu_verification = verify_dish_availability(details.get("websiteUri"), state.dish)
-            if state.max_price_level is not None and price_level is not None and price_level > state.max_price_level:
+            if (
+                state.travel_minutes is not None
+                and estimated_travel_minutes is not None
+                and estimated_travel_minutes > state.travel_minutes + TRAVEL_TIME_LEEWAY_MINUTES
+            ):
                 continue
 
+            raw_price_level = details.get("priceLevel")
+            if not isinstance(raw_price_level, int):
+                raw_price_level = place.get("priceLevel")
+            price_level = raw_price_level if isinstance(raw_price_level, int) else None
+            menu_verification = verify_dish_availability(details.get("websiteUri"), state.dish, details.get("photos"))
             score = float(details.get("rating", 0) or 0) * 2.0
             score += min(details.get("userRatingCount", 0), 3000) / 1000
             score += max(0.0, 5.0 - min(distance_miles, 5.0))
@@ -992,8 +1036,6 @@ class RetrievalAgent:
                     else state.travel_minutes
                 )
                 score += max(0.0, 3.0 - abs(preferred_center - estimated_travel_minutes) / 5.0)
-            if state.max_price_level is not None and price_level is not None:
-                score += max(0.0, 1.5 - abs(state.max_price_level - price_level) * 0.75)
             if state.dish:
                 if menu_verification.get("verified"):
                     score += 3.0
@@ -1017,8 +1059,16 @@ class RetrievalAgent:
                 "primary_type": details.get("primaryTypeDisplayName", {}).get("text"),
                 "open_now": open_now,
                 "open_at_requested_time": open_at_requested_time,
-                "summary": details.get("reviewSummary", {}).get("text")
-                or details.get("editorialSummary", {}).get("text"),
+                "summary": (
+                    details.get("reviewSummary", {}).get("text")
+                    if isinstance(details.get("reviewSummary"), dict)
+                    else details.get("reviewSummary")
+                )
+                or (
+                    details.get("editorialSummary", {}).get("text")
+                    if isinstance(details.get("editorialSummary"), dict)
+                    else details.get("editorialSummary")
+                ),
                 "website_url": details.get("websiteUri"),
                 "menu_verification": menu_verification,
                 "google_maps_url": details.get("googleMapsUri"),
@@ -1038,7 +1088,7 @@ class RetrievalAgent:
             result["confidence_label"] = confidence_label(result["confidence_score"])
             results.append(result)
 
-        ranked_results = sorted(results, key=lambda item: item["score"], reverse=True)
+        ranked_results = sorted(results, key=lambda item: self._sort_key(item, state), reverse=True)
         state.last_results = self._diversify_results(ranked_results, limit)
         state.last_limit = limit
         traces.append(
@@ -1049,6 +1099,20 @@ class RetrievalAgent:
             )
         )
         return state.last_results, traces
+
+    def _sort_key(self, place: dict, state: ConversationState) -> tuple:
+        price_level = place.get("price_level")
+        rating = float(place.get("rating") or 0.0)
+        review_count = int(place.get("user_rating_count") or 0)
+        score = float(place.get("score") or 0.0)
+        travel_minutes = place.get("estimated_travel_minutes")
+        travel_gap = (
+            abs(travel_minutes - state.travel_minutes)
+            if travel_minutes is not None and state.travel_minutes is not None
+            else 999
+        )
+
+        return (score, rating, -travel_gap, min(review_count, 3000))
 
     def _diversify_results(self, ranked_results: List[dict], limit: int) -> List[dict]:
         diversified: List[dict] = []
@@ -1084,8 +1148,6 @@ class RetrievalAgent:
             target_dt = requested_datetime_for_state(state)
             if target_dt is not None:
                 matched.append(f"likely open around {target_dt.strftime('%-I:%M %p').lower()} on {target_dt.strftime('%A')}")
-        if state.max_price_level is not None and place.get("price_level") is not None and int(place["price_level"]) <= int(state.max_price_level):
-            matched.append(f"within your budget range of {format_price_level(state.max_price_level)}")
         if state.min_rating is not None and place.get("rating") is not None and float(place["rating"]) >= float(state.min_rating):
             matched.append(f"meets your minimum rating of {state.min_rating}")
         if state.travel_minutes and place.get("estimated_travel_minutes") and place["estimated_travel_minutes"] <= state.travel_minutes:
@@ -1114,9 +1176,6 @@ class ResponseAgent:
             detail_bits = []
             if place["rating"] is not None:
                 detail_bits.append(f"rated {place['rating']}")
-            price_label = format_price_level(place.get("price_level"))
-            if price_label:
-                detail_bits.append(f"price level {price_label}")
             if place["distance_miles"] is not None:
                 detail_bits.append(f"{place['distance_miles']} miles away")
             travel_estimate_text = format_travel_estimates(place.get("travel_estimates") or {})
@@ -1129,28 +1188,71 @@ class ResponseAgent:
             line = f"{idx}. {place['name']} - {place['address']}"
             if detail_bits:
                 line += f" ({', '.join(detail_bits)})"
-            line += f"\n   Confidence: {place.get('confidence_label', 'medium confidence')} ({place.get('confidence_score', 0)}/100)."
-            status = place.get("verification_status")
-            if status == "verified":
-                line += "\n   Verification: verified."
-            elif status == "not_verified":
-                line += "\n   Verification: not verified."
-            else:
-                line += "\n   Verification: likely match, but not fully verified."
             line += f"\n   Fit: {fit_label_for_place(place)}"
-            verification = place.get("menu_verification") or {}
-            if state.dish and verification.get("label"):
-                line += f"\n   Menu check: {verification['label']}."
-                if verification.get("evidence"):
-                    line += f" Evidence: {verification['evidence']}"
             if place["matched_criteria"]:
                 line += f"\n   Matches: {', '.join(place['matched_criteria'])}."
             if place["unmet_criteria"]:
                 line += f"\n   Does not fully follow: {', '.join(place['unmet_criteria'])}."
-            if place["summary"]:
-                line += f"\n   Why it still stands out: {place['summary']}"
+            place_summary = summary_text(place.get("summary"))
+            if place_summary:
+                line += f"\n   Why it still stands out: {place_summary}"
             lines.append(line)
         lines.append("Ask for top ten recommendations if you want a longer list.")
+        return "\n".join(lines)
+
+    def build_place_follow_up_reply(self, state: ConversationState, place: dict) -> str:
+        verification = place.get("menu_verification") or {}
+        asking_about_dish = bool(state.dish and verification)
+        lines = []
+
+        if asking_about_dish:
+            if verification.get("verified"):
+                lines.append(f"{place['name']} looks like a good bet for {state.dish}.")
+            elif verification.get("status") == "not_verified":
+                lines.append(f"I could not verify that {place['name']} has {state.dish}.")
+            else:
+                lines.append(f"I can’t confidently confirm that {place['name']} has {state.dish}.")
+        else:
+            lines.append(f"Here’s more about {place['name']}:")
+
+        overview_bits = []
+        if place.get("address"):
+            overview_bits.append(place["address"])
+        if place.get("rating") is not None:
+            overview_bits.append(f"rating {place['rating']}")
+        if place.get("distance_miles") is not None:
+            overview_bits.append(f"{place['distance_miles']} miles away")
+        if overview_bits:
+            lines.append("It is " + ", ".join(overview_bits) + ".")
+
+        travel_estimate_text = format_travel_estimates(place.get("travel_estimates") or {})
+        if travel_estimate_text:
+            lines.append(f"Estimated travel: {travel_estimate_text}.")
+        elif place.get("estimated_travel_minutes") is not None:
+            lines.append(
+                f"Estimated travel: about {place['estimated_travel_minutes']} minutes by {travel_mode_label(state.travel_mode)}."
+            )
+
+        if place.get("open_now") is True:
+            lines.append("It appears to be open right now.")
+        elif place.get("open_now") is False:
+            lines.append("It does not appear to be open right now.")
+
+        if state.when == "later" and place.get("open_at_requested_time") is True:
+            target_dt = requested_datetime_for_state(state)
+            if target_dt is not None:
+                lines.append(f"It also looks likely to be open around {target_dt.strftime('%-I:%M %p').lower()} on {target_dt.strftime('%A')}.")
+
+        place_summary = summary_text(place.get("summary"))
+        if place_summary:
+            lines.append(f"Why it stands out: {place_summary}")
+
+        if place.get("matched_criteria"):
+            lines.append(f"What works well: {', '.join(place['matched_criteria'])}.")
+
+        if place.get("unmet_criteria"):
+            lines.append(f"The main catch: {exact_reason_summary(place)}.")
+
         return "\n".join(lines)
 
 
@@ -1180,6 +1282,19 @@ class CoordinatorAgent:
             reply = self.response_agent.build_reply(state, results, top_k_request)
             append_message(state, "assistant", reply)
             return self._payload(session_id, state, reply, results, traces)
+
+        follow_up_place = find_follow_up_place(message, state.last_results)
+        if follow_up_place is not None:
+            reply = self.response_agent.build_place_follow_up_reply(state, follow_up_place)
+            traces.append(
+                AgentTrace(
+                    "Response Agent",
+                    "place_follow_up",
+                    f"Answered a follow-up question about {follow_up_place['name']} from the existing results.",
+                )
+            )
+            append_message(state, "assistant", reply)
+            return self._payload(session_id, state, reply, state.last_results, traces)
 
         traces.extend(self.intent_agent.run(state, message, browser_location))
         question = self.clarification_agent.next_question(state)

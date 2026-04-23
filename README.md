@@ -1,6 +1,6 @@
 # Agentic Dining Assistant
 
-An agentic AI restaurant recommendation product with a runnable web interface. The system asks for missing user constraints, uses Gemini for conversational slot-filling and response generation when configured, grounds recommendations in live Google Places data, verifies requested dishes against restaurant website menus when possible, explains why each place matches or misses the user request, and displays the results on a map.
+An agentic AI restaurant recommendation product with a runnable web interface. The system asks for missing user constraints, uses Gemini for conversational slot-filling and response generation when configured, grounds recommendations in live Google Places data, verifies requested dishes against restaurant website menus when possible, explains why each place matches or misses the user request, supports place-specific follow-up questions, and displays the results on a map.
 
 ## Why this fits the course
 
@@ -22,16 +22,17 @@ That gives you:
 ## Product behavior
 
 - Chat-style frontend similar to ChatGPT
-- Multiple saved chats with a switchable chat history sidebar
+- Multiple saved chats with a switchable chat history drawer
+- Saved chats can be deleted from the drawer
 - Top 5 recommendations by default
 - User can ask for top 10 recommendations
 - Live map view with directions links
 - Uses place names, decimal coordinates, or DMS coordinates for location input
 - Considers travel-time preferences, including ranges and mixed modes like walk or public transport
-- Captures budget preferences such as `$`, `$$`, `$$$`, and `$$$$`
-- Tries to verify requested dishes from restaurant websites, menu PDFs, and optional OCR on image menus
-- Shows matched criteria and unmet criteria for each place
-- Labels results with verification status and confidence instead of overclaiming
+- Uses a hard travel cap of the user’s preferred time plus 20 minutes for weaker matches
+- Tries to verify requested dishes from restaurant websites, menu PDFs, restaurant-site images, and Google Places photos via OCR when available
+- Supports place-specific follow-up questions like asking for more detail about one recommendation
+- Shows matched criteria and unmet criteria for each place without overclaiming dish availability
 
 ## Architecture
 
@@ -43,7 +44,7 @@ That gives you:
 ### Frontend
 
 - `templates/index.html`: UI shell
-- `static/app.js`: browser chat logic, map rendering, agent trace rendering
+- `static/app.js`: browser chat logic, saved chat handling, map rendering, and agent trace rendering
 - `static/style.css`: visual styling
 
 ## How to run
@@ -92,7 +93,7 @@ Then open:
 `http://127.0.0.1:5001`
 
 If `GEMINI_API_KEY` is missing, the app still runs with the rule-based fallback path. If `GOOGLE_MAPS_API_KEY` is missing, live place search will fail.
-If you want OCR for image-based menus, install the Tesseract system binary as well. Without it, the app still verifies HTML pages and PDF menus.
+If you want OCR for image-based menus or Google Places photos, install the Tesseract system binary as well. Without it, the app still verifies HTML pages and PDF menus.
 Saved chats are stored locally on disk in `data/chat_sessions.json`.
 
 ## Demo ideas
@@ -103,7 +104,9 @@ Try prompts like:
 - `I want dosa now and I can drive 20 minutes from 40.754314, -73.977541.`
 - `I want coffee for a date and show me top ten recommendations.`
 - `I want wine and fine dining near Marcus Garvey Park, and I can travel 5 to 10 minutes by walk or public transport.`
-- `I want croissants tomorrow afternoon near Columbus Circle and my budget is $$ to $$$.`
+- `I want croissants tomorrow afternoon near Columbus Circle and I can travel 15 minutes by subway.`
+- `Tell me more about the second one.`
+- `Does Down Under Coffee have dalgona coffee?`
 
 ## Suggested report framing
 

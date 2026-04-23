@@ -81,7 +81,8 @@ SCRAPER_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
-MENU_VERIFICATION_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
+PLACE_PHOTO_MEDIA_URL = "https://places.googleapis.com/v1/{photo_name}/media"
+MENU_VERIFICATION_CACHE: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
 
 
 def normalize_text(text: str) -> str:
@@ -197,16 +198,40 @@ def _extract_image_text(content: bytes) -> Optional[str]:
         return None
 
 
-def verify_dish_availability(website_url: Optional[str], dish: Optional[str]) -> Dict[str, Any]:
-    if not website_url:
-        return {
-            "status": "no_website",
-            "label": "no website available for verification",
-            "verified": False,
-            "source_url": None,
-            "evidence": None,
-        }
+def _place_photo_names(place_photos: Optional[List[Dict[str, Any]]]) -> List[str]:
+    names: List[str] = []
+    for photo in place_photos or []:
+        name = photo.get("name")
+        if isinstance(name, str) and name:
+            names.append(name)
+    return names
 
+
+def _fetch_place_photo_content(photo_name: str, max_width_px: int = 1600) -> Optional[bytes]:
+    if not PLACES_API_KEY or not photo_name:
+        return None
+    try:
+        response = requests.get(
+            PLACE_PHOTO_MEDIA_URL.format(photo_name=photo_name),
+            params={"key": PLACES_API_KEY, "maxWidthPx": max_width_px},
+            timeout=30,
+            allow_redirects=True,
+        )
+        response.raise_for_status()
+    except Exception:
+        return None
+
+    content_type = (response.headers.get("Content-Type") or "").lower()
+    if content_type.startswith("image/") and response.content:
+        return response.content
+    return None
+
+
+def verify_dish_availability(
+    website_url: Optional[str],
+    dish: Optional[str],
+    place_photos: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     cleaned_dish = normalize_text(dish or "")
     if not cleaned_dish:
         return {
@@ -217,91 +242,115 @@ def verify_dish_availability(website_url: Optional[str], dish: Optional[str]) ->
             "evidence": None,
         }
 
-    cache_key = (website_url, cleaned_dish)
+    photo_names = _place_photo_names(place_photos)
+    cache_key = (website_url or "", cleaned_dish, "|".join(photo_names[:4]))
     if cache_key in MENU_VERIFICATION_CACHE:
         return MENU_VERIFICATION_CACHE[cache_key]
 
-    session = _requests_session()
-    try:
-        response = session.get(website_url, timeout=20)
-        response.raise_for_status()
-    except Exception as exc:
+    if not website_url and not photo_names:
         result = {
-            "status": "website_unreachable",
-            "label": f"could not verify from the website ({exc})",
+            "status": "no_website",
+            "label": "no website or Google Places photos available for verification",
             "verified": False,
-            "source_url": website_url,
+            "source_url": None,
             "evidence": None,
         }
         MENU_VERIFICATION_CACHE[cache_key] = result
         return result
 
-    html = response.text
-    visible_text = _extract_visible_text(html)
-    evidence = _find_dish_in_text(visible_text, cleaned_dish)
-    if evidence:
-        result = {
-            "status": "verified_html",
-            "label": f"verified on the website for {cleaned_dish}",
-            "verified": True,
-            "source_url": website_url,
-            "evidence": evidence,
-        }
-        MENU_VERIFICATION_CACHE[cache_key] = result
-        return result
-
-    for target_url, _label in _candidate_menu_links(website_url, html):
+    session = _requests_session()
+    if website_url:
         try:
-            linked_response = session.get(target_url, timeout=20)
-            linked_response.raise_for_status()
+            response = session.get(website_url, timeout=20)
+            response.raise_for_status()
         except Exception:
-            continue
-
-        lowered = target_url.lower()
-        content_type = (linked_response.headers.get("Content-Type") or "").lower()
-        if ".pdf" in lowered or "pdf" in content_type:
-            try:
-                pdf_text = _extract_pdf_text(linked_response.content)
-            except Exception:
-                continue
-            evidence = _find_dish_in_text(pdf_text, cleaned_dish)
+            response = None
+        if response is not None:
+            html = response.text
+            visible_text = _extract_visible_text(html)
+            evidence = _find_dish_in_text(visible_text, cleaned_dish)
             if evidence:
                 result = {
-                    "status": "verified_pdf",
-                    "label": f"verified from a PDF menu for {cleaned_dish}",
+                    "status": "verified_html",
+                    "label": f"verified on the website for {cleaned_dish}",
                     "verified": True,
-                    "source_url": target_url,
+                    "source_url": website_url,
                     "evidence": evidence,
                 }
                 MENU_VERIFICATION_CACHE[cache_key] = result
                 return result
-            continue
 
-        if any(image_ext in lowered for image_ext in [".png", ".jpg", ".jpeg", ".webp"]) or content_type.startswith("image/"):
-            image_text = _extract_image_text(linked_response.content)
-            if image_text is None:
-                continue
-            evidence = _find_dish_in_text(image_text, cleaned_dish)
-            if evidence:
-                result = {
-                    "status": "verified_image_ocr",
-                    "label": f"verified from an image menu via OCR for {cleaned_dish}",
-                    "verified": True,
-                    "source_url": target_url,
-                    "evidence": evidence,
-                }
-                MENU_VERIFICATION_CACHE[cache_key] = result
-                return result
-            continue
+            for target_url, _label in _candidate_menu_links(website_url, html):
+                try:
+                    linked_response = session.get(target_url, timeout=20)
+                    linked_response.raise_for_status()
+                except Exception:
+                    continue
 
-        linked_text = _extract_visible_text(linked_response.text)
-        evidence = _find_dish_in_text(linked_text, cleaned_dish)
+                lowered = target_url.lower()
+                content_type = (linked_response.headers.get("Content-Type") or "").lower()
+                if ".pdf" in lowered or "pdf" in content_type:
+                    try:
+                        pdf_text = _extract_pdf_text(linked_response.content)
+                    except Exception:
+                        continue
+                    evidence = _find_dish_in_text(pdf_text, cleaned_dish)
+                    if evidence:
+                        result = {
+                            "status": "verified_pdf",
+                            "label": f"verified from a PDF menu for {cleaned_dish}",
+                            "verified": True,
+                            "source_url": target_url,
+                            "evidence": evidence,
+                        }
+                        MENU_VERIFICATION_CACHE[cache_key] = result
+                        return result
+                    continue
+
+                if any(image_ext in lowered for image_ext in [".png", ".jpg", ".jpeg", ".webp"]) or content_type.startswith("image/"):
+                    image_text = _extract_image_text(linked_response.content)
+                    if image_text is None:
+                        continue
+                    evidence = _find_dish_in_text(image_text, cleaned_dish)
+                    if evidence:
+                        result = {
+                            "status": "verified_image_ocr",
+                            "label": f"verified from an image menu via OCR for {cleaned_dish}",
+                            "verified": True,
+                            "source_url": target_url,
+                            "evidence": evidence,
+                        }
+                        MENU_VERIFICATION_CACHE[cache_key] = result
+                        return result
+                    continue
+
+                linked_text = _extract_visible_text(linked_response.text)
+                evidence = _find_dish_in_text(linked_text, cleaned_dish)
+                if evidence:
+                    result = {
+                        "status": "verified_menu_page",
+                        "label": f"verified from a menu page for {cleaned_dish}",
+                        "verified": True,
+                        "source_url": target_url,
+                        "evidence": evidence,
+                    }
+                    MENU_VERIFICATION_CACHE[cache_key] = result
+                    return result
+
+    for photo_name in photo_names[:4]:
+        content = _fetch_place_photo_content(photo_name)
+        if not content:
+            continue
+        image_text = _extract_image_text(content)
+        if image_text is None:
+            continue
+        evidence = _find_dish_in_text(image_text, cleaned_dish)
         if evidence:
             result = {
-                "status": "verified_menu_page",
-                "label": f"verified from a menu page for {cleaned_dish}",
+                "status": "verified_places_photo_ocr",
+                "label": f"verified from a Google Places photo via OCR for {cleaned_dish}",
                 "verified": True,
-                "source_url": target_url,
+                "source_url": photo_name,
                 "evidence": evidence,
             }
             MENU_VERIFICATION_CACHE[cache_key] = result
@@ -309,9 +358,9 @@ def verify_dish_availability(website_url: Optional[str], dish: Optional[str]) ->
 
     result = {
         "status": "not_verified",
-        "label": f"could not verify {cleaned_dish} from the restaurant website",
+        "label": f"could not verify {cleaned_dish} from the restaurant website or Google Places photos",
         "verified": False,
-        "source_url": website_url,
+        "source_url": website_url or (photo_names[0] if photo_names else None),
         "evidence": None,
     }
     MENU_VERIFICATION_CACHE[cache_key] = result
@@ -333,7 +382,6 @@ Use the current state and the latest user message to update this exact shape:
   "travel_mode": null,
   "min_travel_minutes": null,
   "travel_minutes": null,
-  "max_price_level": null,
   "min_rating": null,
   "next_question": null
 }
@@ -348,7 +396,6 @@ Rules:
 - If the user gives travel time, capture travel_minutes and travel_mode when stated.
 - If the user gives a range like 5 to 10 minutes, store min_travel_minutes=5 and travel_minutes=10.
 - If the user gives multiple acceptable travel modes, preserve that flexibility instead of collapsing it to just one mode.
-- If the user gives a budget or price range like $, $$, $$$, $$$$, cheap, moderate, or expensive, capture max_price_level as 1 to 4.
 - Time is optional. Do not ask for it unless the user is clearly asking for time-sensitive recommendations and that detail is missing.
 - Ask only one short natural next question at a time.
 - Leave fields null when the value is unknown.
@@ -366,13 +413,14 @@ Write a concise recommendation list using only the provided data.
 - Write exactly the requested number of recommendations when that many results are provided.
 - Mention every place in the provided results list once, in the same order.
 - Use numbered items like 1., 2., 3.
-- For every recommendation, explicitly say whether it fits the user's criteria well or does not fully fit.
+- For every recommendation, explain the exact reason it is a strong match or the exact reason it misses, instead of repeating a generic phrase.
 - Mention distance, travel time, rating, and open-now status when available.
 - If a dish was requested, mention whether it was verified from the restaurant website, PDF menu, or OCR menu image.
 - Use the provided verification_status and confidence_label. Do not claim a dish is definitely available unless the status is verified.
 - If verification_status is likely, say it is a likely match or not fully verified.
 - If verification_status is not_verified, say that clearly.
 - If a place misses a user preference, mention that briefly.
+- If a place misses only one or two preferences, name those exact issues directly, such as travel time, price, opening hours, or missing dish verification.
 - If a place is still good but within 10 minutes beyond the user's travel preference, say that clearly instead of rejecting it harshly.
 - If the user asked for more results, keep both strong matches and weaker matches, but clearly label the weaker ones.
 - Do not invent facts.
@@ -411,17 +459,44 @@ def keyword_lookup(text: str, keyword_map: Dict[str, List[str]]) -> Optional[str
 
 def infer_dish(text: str) -> Optional[str]:
     cleaned = normalize_text(text)
+    if not cleaned:
+        return None
+
+    non_food_markers = [
+        "price",
+        "budget",
+        "under $",
+        "under $$",
+        "under $$$",
+        "under $$$$",
+        "show me",
+        "top 10",
+        "top ten",
+        "open at",
+        "tomorrow",
+        "afternoon",
+        "evening",
+        "more about",
+        "tell me more",
+        "details about",
+        "get there",
+        "there by",
+    ]
+    if any(marker in cleaned for marker in non_food_markers):
+        return None
+
     dish_patterns = [
-        r"crave (.+)",
-        r"want to eat (.+)",
-        r"want (.+)",
-        r"eat (.+)",
+        r"crave (.+?)(?:\s+\bnear\b|\s+\bin\b|\s+\bat\b|\s+\bwith\b|\s+\band\b|$)",
+        r"want to (?:have|eat|drink|try)\s+(.+?)(?:\s+\bnear\b|\s+\bin\b|\s+\bat\b|\s+\bwith\b|\s+\band\b|$)",
+        r"want to eat (.+?)(?:\s+\bnear\b|\s+\bin\b|\s+\bat\b|\s+\bwith\b|\s+\band\b|$)",
+        r"want (.+?)(?:\s+\bnear\b|\s+\bin\b|\s+\bat\b|\s+\bwith\b|\s+\band\b|$)",
+        r"eat (.+?)(?:\s+\bnear\b|\s+\bin\b|\s+\bat\b|\s+\bwith\b|\s+\band\b|$)",
     ]
     for pattern in dish_patterns:
         match = re.search(pattern, cleaned)
         if match:
             value = match.group(1).strip(" .")
-            if value and len(value) < 80:
+            if value and len(value) < 80 and value not in {"under", "over", "price", "budget", "there"}:
                 return value
     return None
 
@@ -513,7 +588,6 @@ def analyze_app_turn_with_gemini(state: Dict[str, Any], message: str) -> Optiona
                 "travel_mode": state.get("travel_mode"),
                 "min_travel_minutes": state.get("min_travel_minutes"),
                 "travel_minutes": state.get("travel_minutes"),
-                "max_price_level": state.get("max_price_level"),
                 "min_rating": state.get("min_rating"),
             },
             ensure_ascii=False,
@@ -540,7 +614,6 @@ def build_final_response_with_gemini(state: Dict[str, Any], results: List[Dict[s
             "travel_mode": state.get("travel_mode"),
             "min_travel_minutes": state.get("min_travel_minutes"),
             "travel_minutes": state.get("travel_minutes"),
-            "max_price_level": state.get("max_price_level"),
             "min_rating": state.get("min_rating"),
         },
         "results": results[:limit],

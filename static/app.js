@@ -46,7 +46,29 @@ async function requestJson(url, options = {}) {
 function addMessage(role, text) {
   const node = document.createElement("div");
   node.className = `message ${role}`;
-  node.textContent = text;
+  const lines = String(text || "").split("\n");
+  lines.forEach((line, index) => {
+    if (index > 0) {
+      node.appendChild(document.createElement("br"));
+    }
+
+    const urlMatch = line.match(/^(Website|Google Maps|Directions):\s+(https?:\/\/\S+)$/);
+    if (urlMatch) {
+      const label = document.createElement("span");
+      label.textContent = `${urlMatch[1]}: `;
+      node.appendChild(label);
+
+      const link = document.createElement("a");
+      link.href = urlMatch[2];
+      link.textContent = urlMatch[2];
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      node.appendChild(link);
+      return;
+    }
+
+    node.appendChild(document.createTextNode(line));
+  });
   chatLog.appendChild(node);
   chatLog.scrollTop = chatLog.scrollHeight;
 }
