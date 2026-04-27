@@ -29,7 +29,7 @@ except ImportError:
 
 PLACES_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
 PLACES_TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
 PLACES_DETAILS_URL = "https://places.googleapis.com/v1/places/{place_id}"
 NYC_BOUNDS = {
@@ -50,6 +50,27 @@ CUISINE_KEYWORDS = {
     "mexican": ["mexican"],
     "american": ["american", "burger", "steakhouse"],
     "coffee": ["coffee", "cafe", "espresso"],
+}
+
+CUISINE_ONLY_TERMS = {
+    "indian",
+    "south indian",
+    "north indian",
+    "italian",
+    "chinese",
+    "indo chinese",
+    "indo-chinese",
+    "thai",
+    "korean",
+    "japanese",
+    "mexican",
+    "american",
+    "coffee",
+    "japanese food",
+    "indian food",
+    "italian food",
+    "chinese food",
+    "mexican food",
 }
 
 MEAL_TYPE_KEYWORDS = {
@@ -390,13 +411,13 @@ Rules:
 - The latest user message can override earlier preferences if it clearly changes the request.
 - Time means whether the user wants to eat now or later.
 - Infer cuisine from strong dishes when obvious, like pizza -> italian, dosa -> south indian, sushi -> japanese, tacos -> mexican, coffee -> coffee.
-- Only ask for cuisine when the food request is vague, such as breakfast, lunch, dinner, snack, dessert, sweets, or food.
+- Cuisine is optional. Do not ask for cuisine unless the user explicitly asks for cuisine-specific recommendations.
 - If the user mentions a concrete place name or neighborhood, store it in manual_location and set location_mode to manual.
 - If the user says use my location, current location, or my location, set location_mode to current.
 - If the user gives travel time, capture travel_minutes and travel_mode when stated.
 - If the user gives a range like 5 to 10 minutes, store min_travel_minutes=5 and travel_minutes=10.
 - If the user gives multiple acceptable travel modes, preserve that flexibility instead of collapsing it to just one mode.
-- Time is optional. Do not ask for it unless the user is clearly asking for time-sensitive recommendations and that detail is missing.
+- Gather these before searching whenever they are missing: location, when, travel time, and minimum rating.
 - Ask only one short natural next question at a time.
 - Leave fields null when the value is unknown.
 """
@@ -420,7 +441,7 @@ Write a concise recommendation list using only the provided data.
 - If verification_status is likely, say it is a likely match or not fully verified.
 - If verification_status is not_verified, say that clearly.
 - If a place misses a user preference, mention that briefly.
-- If a place misses only one or two preferences, name those exact issues directly, such as travel time, price, opening hours, or missing dish verification.
+- If a place misses only one or two preferences, name those exact issues directly, such as travel time, opening hours, missing dish verification, or rating.
 - If a place is still good but within 10 minutes beyond the user's travel preference, say that clearly instead of rejecting it harshly.
 - If the user asked for more results, keep both strong matches and weaker matches, but clearly label the weaker ones.
 - Do not invent facts.
@@ -455,6 +476,11 @@ def keyword_lookup(text: str, keyword_map: Dict[str, List[str]]) -> Optional[str
         if any(keyword in cleaned for keyword in keywords):
             return canonical
     return None
+
+
+def is_cuisine_only_phrase(text: Optional[str]) -> bool:
+    cleaned = normalize_text(text or "")
+    return cleaned in CUISINE_ONLY_TERMS
 
 
 def infer_dish(text: str) -> Optional[str]:
@@ -496,7 +522,7 @@ def infer_dish(text: str) -> Optional[str]:
         match = re.search(pattern, cleaned)
         if match:
             value = match.group(1).strip(" .")
-            if value and len(value) < 80 and value not in {"under", "over", "price", "budget", "there"}:
+            if value and len(value) < 80 and value not in {"under", "over", "price", "budget", "there"} and not is_cuisine_only_phrase(value):
                 return value
     return None
 
@@ -723,8 +749,6 @@ class RestaurantRecommenderBot:
             return "Can I use your current location to recommend places nearby, or do you want to enter the location manually?"
         if self.state.location_mode == "manual" and not self.state.manual_location:
             return "Please enter the location you want me to search near, like Central Park or Times Square."
-        if not self.state.cuisine and self.state.dish:
-            return f"Just to confirm, what cuisine should I focus on for {self.state.dish}?"
         if not self.state.meal_type:
             return "Is this more of a snack, a full meal, dessert, or coffee?"
         if not self.state.place_type:
@@ -780,7 +804,7 @@ class RestaurantRecommenderBot:
             text_query=self.build_search_query(),
             field_mask=(
                 "places.id,places.displayName,places.formattedAddress,places.location,"
-                "places.rating,places.userRatingCount,places.priceLevel,places.primaryTypeDisplayName"
+                "places.rating,places.userRatingCount,places.primaryTypeDisplayName"
             ),
             max_result_count=10,
             location_bias=location_bias,
@@ -795,7 +819,7 @@ class RestaurantRecommenderBot:
             details = place_details(
                 place["id"],
                 (
-                    "id,displayName,formattedAddress,location,rating,userRatingCount,priceLevel,"
+                    "id,displayName,formattedAddress,location,rating,userRatingCount,"
                     "primaryTypeDisplayName,regularOpeningHours,currentOpeningHours,"
                     "reviewSummary,editorialSummary,takeout,delivery,dineIn,servesCoffee,"
                     "servesDessert,servesLunch,servesDinner,websiteUri,googleMapsUri"
@@ -832,7 +856,6 @@ class RestaurantRecommenderBot:
                     "rating": details.get("rating"),
                     "user_rating_count": details.get("userRatingCount"),
                     "distance_miles": distance_miles,
-                    "price_level": details.get("priceLevel"),
                     "primary_type": details.get("primaryTypeDisplayName", {}).get("text"),
                     "review_summary": details.get("reviewSummary", {}).get("text"),
                     "editorial_summary": details.get("editorialSummary", {}).get("text"),

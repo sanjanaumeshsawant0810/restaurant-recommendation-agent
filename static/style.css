@@ -8,7 +8,7 @@
   --accent-deep: #8f5a0c;
   --accent-soft: #f6c46d;
   --line: rgba(32, 35, 52, 0.14);
-  --user: #202334;
+  --user: #3d5f82;
   --assistant: #f6e7c7;
 }
 
@@ -228,7 +228,7 @@ body {
   margin: 0;
   font-size: clamp(1.1rem, 1.8vw, 1.5rem);
   line-height: 1.15;
-  color: var(--muted);
+  color: var(--accent-deep);
 }
 
 .eyebrow {
@@ -236,7 +236,7 @@ body {
   font-size: 0.8rem;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: var(--accent-deep);
+  color: #202334;
 }
 
 .hero-title,
@@ -245,12 +245,12 @@ body {
   line-height: 0.95;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--accent-deep);
+  color: #202334;
 }
 
 .subcopy,
 .map-status {
-  color: var(--muted);
+  color: var(--user);
   max-width: 56ch;
 }
 

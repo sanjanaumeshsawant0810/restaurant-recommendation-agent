@@ -59,6 +59,9 @@ DISH_TO_CUISINE = {
     "tacos": "mexican",
     "burrito": "mexican",
     "coffee": "coffee",
+    "ice cream": "dessert",
+    "gelato": "dessert",
+    "sorbet": "dessert",
 }
 
 VAGUE_FOOD_INTENTS = {
@@ -69,9 +72,42 @@ VAGUE_FOOD_INTENTS = {
     "snack",
     "dessert",
     "sweets",
-    "ice cream",
     "food",
     "eat",
+}
+
+DISH_QUERY_HINTS = {
+    "ice cream": "ice cream shop",
+    "gelato": "gelato shop",
+    "sorbet": "dessert shop",
+    "froyo": "frozen yogurt shop",
+    "frozen yogurt": "frozen yogurt shop",
+    "dessert": "dessert shop",
+    "cake": "bakery",
+    "croissant": "bakery",
+    "pastry": "bakery",
+    "coffee": "coffee shop",
+}
+
+CUISINE_ONLY_TERMS = {
+    "indian",
+    "south indian",
+    "north indian",
+    "italian",
+    "chinese",
+    "indo chinese",
+    "indo-chinese",
+    "thai",
+    "korean",
+    "japanese",
+    "mexican",
+    "american",
+    "coffee",
+    "japanese food",
+    "indian food",
+    "italian food",
+    "chinese food",
+    "mexican food",
 }
 
 
@@ -261,7 +297,7 @@ def parse_top_k_request(message: str) -> Optional[int]:
 
 def parse_min_rating(message: str) -> Optional[float]:
     cleaned = normalize_text(message)
-    match = re.search(r"(?:at least|min(?:imum)?|rating)\s*(\d(?:\.\d)?)", cleaned)
+    match = re.search(r"(?:at least|min(?:imum)?|rating(?:\s+of)?)\s*(\d(?:\.\d)?)", cleaned)
     if match:
         return float(match.group(1))
     if re.fullmatch(r"\d(?:\.\d)?", cleaned):
@@ -333,6 +369,21 @@ def infer_location_mode(message: str) -> Optional[str]:
     return None
 
 
+def looks_like_time_phrase(text: Optional[str]) -> bool:
+    cleaned = normalize_text(text or "")
+    if not cleaned:
+        return False
+    return bool(
+        re.fullmatch(
+            r"(?:(?:today|tomorrow|tonight|this afternoon|this evening|afternoon|evening)\s+)?"
+            r"(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)"
+            r"(?:\s+in\s+the\s+(?:afternoon|evening))?",
+            cleaned,
+        )
+        or re.fullmatch(r"(?:the\s+)?(?:afternoon|evening|tonight)", cleaned)
+    )
+
+
 def infer_manual_location_text(message: str) -> Optional[str]:
     raw = (message or "").strip()
     cleaned = normalize_text(raw)
@@ -340,6 +391,12 @@ def infer_manual_location_text(message: str) -> Optional[str]:
     coordinate_location = parse_coordinate_pair(raw)
     if coordinate_location:
         return raw
+
+    if re.fullmatch(
+        r"(?:today|tomorrow|tonight|this afternoon|this evening|afternoon|evening)(?:\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?",
+        cleaned,
+    ):
+        return None
 
     patterns = [
         r"\bnear\s+(.+?)(?:\s+with\b|\s+and\b|$)",
@@ -350,7 +407,7 @@ def infer_manual_location_text(message: str) -> Optional[str]:
         match = re.search(pattern, cleaned)
         if match:
             location_text = match.group(1).strip(" ,.")
-            if location_text:
+            if location_text and not re.fullmatch(r"\d{1,2}(?::\d{2})?\s*(?:am|pm)?", location_text) and not looks_like_time_phrase(location_text):
                 return location_text
     return None
 
@@ -365,8 +422,29 @@ def infer_cuisine_from_dish(dish: Optional[str]) -> Optional[str]:
     return None
 
 
-def is_vague_food_request(dish: Optional[str]) -> bool:
-    return normalize_text(dish or "") in VAGUE_FOOD_INTENTS
+def is_cuisine_only_phrase(text: Optional[str]) -> bool:
+    cleaned = normalize_text(text or "")
+    return cleaned in CUISINE_ONLY_TERMS
+
+
+def question_requests_cuisine(question: Optional[str]) -> bool:
+    cleaned = normalize_text(question or "")
+    if not cleaned:
+        return False
+    return "cuisine" in cleaned or "what kind of food" in cleaned
+
+
+def search_category_for_state(state: ConversationState) -> str:
+    combined = " ".join(part for part in [state.dish, state.cuisine] if part).strip()
+    cleaned = normalize_text(combined)
+    for key, hint in sorted(DISH_QUERY_HINTS.items(), key=lambda item: len(item[0]), reverse=True):
+        if key in cleaned:
+            return hint
+    if state.cuisine == "coffee":
+        return "coffee shop"
+    if state.cuisine == "dessert":
+        return "dessert shop"
+    return "restaurant"
 
 
 def infer_dish(message: str) -> Optional[str]:
@@ -374,7 +452,24 @@ def infer_dish(message: str) -> Optional[str]:
     if not cleaned:
         return None
 
+    if re.fullmatch(r"\d(?:\.\d)?", cleaned):
+        return None
+
     non_food_markers = [
+        "rating",
+        "stars",
+        "star",
+        "walk",
+        "walking",
+        "transit",
+        "public transport",
+        "public transit",
+        "subway",
+        "train",
+        "bus",
+        "car",
+        "drive",
+        "driving",
         "price",
         "budget",
         "under $",
@@ -393,6 +488,9 @@ def infer_dish(message: str) -> Optional[str]:
         "details about",
         "is it",
         "is there",
+        "right now",
+        "now",
+        "later",
         "open now",
         "get there",
         "there by",
@@ -411,9 +509,10 @@ def infer_dish(message: str) -> Optional[str]:
         match = re.search(pattern, cleaned)
         if match:
             value = match.group(1).strip(" .")
-            if value and value not in {"under", "over", "price", "budget", "there"}:
+            value = re.sub(r"^(?:a|an|the)\s+", "", value)
+            if value and value not in {"under", "over", "price", "budget", "there"} and not is_cuisine_only_phrase(value):
                 return value
-    if len(cleaned.split()) <= 4 and cleaned not in {"under", "over", "there"}:
+    if len(cleaned.split()) <= 4 and cleaned not in {"under", "over", "there"} and not is_cuisine_only_phrase(cleaned):
         return cleaned
     return None
 
@@ -493,22 +592,25 @@ def infer_travel_preferences(message: str) -> Dict[str, Optional[int]]:
     if match:
         travel_minutes = int(match.group(1))
     elif re.fullmatch(r"\d{1,3}", cleaned):
-        travel_minutes = int(cleaned)
+        numeric_value = int(cleaned)
+        if numeric_value > 5:
+            travel_minutes = numeric_value
 
     search_radius_meters = None
     if travel_minutes is not None:
+        capped_travel_minutes = travel_minutes + TRAVEL_TIME_LEEWAY_MINUTES
         radius_candidates = []
         for mode in allowed_travel_modes(travel_mode):
             if mode == "walk":
-                radius_candidates.append(max(500, min(travel_minutes * 80, 5000)))
+                radius_candidates.append(max(500, min(capped_travel_minutes * 80, 5000)))
             elif mode == "car":
-                radius_candidates.append(max(1500, min(travel_minutes * 700, 30000)))
+                radius_candidates.append(max(1500, min(capped_travel_minutes * 700, 30000)))
             elif mode == "transit":
-                radius_candidates.append(max(1500, min(travel_minutes * 400, 20000)))
+                radius_candidates.append(max(1500, min(capped_travel_minutes * 400, 20000)))
         if radius_candidates:
             search_radius_meters = max(radius_candidates)
         else:
-            search_radius_meters = max(1000, min(travel_minutes * 250, 15000))
+            search_radius_meters = max(1000, min(capped_travel_minutes * 250, 15000))
 
     return {
         "travel_mode": travel_mode,
@@ -609,9 +711,21 @@ def build_search_query(state: ConversationState) -> str:
     parts = []
     if state.dish:
         parts.append(state.dish)
-    if state.cuisine and state.cuisine not in " ".join(parts):
+    category = search_category_for_state(state)
+    cuisine_text = normalize_text(state.cuisine or "")
+    if state.dish and category != "restaurant":
+        cuisine_should_be_added = False
+    else:
+        cuisine_should_be_added = True
+    if (
+        cuisine_should_be_added
+        and state.cuisine
+        and state.cuisine not in " ".join(parts)
+        and cuisine_text not in normalize_text(category)
+    ):
         parts.append(state.cuisine)
-    parts.append("cafe" if state.cuisine == "coffee" else "restaurant")
+    if category not in " ".join(parts):
+        parts.append(category)
     return " ".join(parts).strip()
 
 
@@ -680,6 +794,43 @@ def is_place_open_at_requested_time(details: dict, state: ConversationState) -> 
             return True
 
     return False
+
+
+def format_day_time(hour: int, minute: int) -> str:
+    dt = datetime(2000, 1, 1, hour, minute)
+    return dt.strftime("%-I:%M %p").lower()
+
+
+def opening_hours_summary(details: dict) -> Optional[str]:
+    current_hours = details.get("currentOpeningHours") or {}
+    weekday_descriptions = current_hours.get("weekdayDescriptions") or []
+    if weekday_descriptions:
+        today_name = datetime.now(APP_TIMEZONE).strftime("%A")
+        for line in weekday_descriptions:
+            if isinstance(line, str) and line.startswith(f"{today_name}:"):
+                return line
+
+    periods = details.get("regularOpeningHours", {}).get("periods") or []
+    if not periods:
+        return None
+
+    google_day = (datetime.now(APP_TIMEZONE).weekday() + 1) % 7
+    windows = []
+    for period in periods:
+        open_info = period.get("open")
+        close_info = period.get("close")
+        if not open_info or not close_info:
+            continue
+        if open_info.get("day") != google_day or close_info.get("day") != google_day:
+            continue
+        windows.append(
+            f"{format_day_time(int(open_info.get('hour', 0)), int(open_info.get('minute', 0)))} to "
+            f"{format_day_time(int(close_info.get('hour', 0)), int(close_info.get('minute', 0)))}"
+        )
+
+    if windows:
+        return "Today: " + "; ".join(windows)
+    return None
 
 
 def unmet_criteria_for_place(place: dict, state: ConversationState) -> List[str]:
@@ -785,6 +936,8 @@ class IntentAgent:
     def run(self, state: ConversationState, message: str, browser_location: Optional[dict]) -> List[AgentTrace]:
         traces: List[AgentTrace] = []
         cleaned = normalize_text(message)
+        bare_numeric_reply = bool(re.fullmatch(r"\d{1,3}(?:\.\d)?", cleaned))
+        previous_dish = state.dish
         state.llm_next_question = None
 
         gemini_result = None
@@ -895,11 +1048,14 @@ class IntentAgent:
             state.travel_mode = inferred_travel["travel_mode"]
         if inferred_travel["min_travel_minutes"]:
             state.min_travel_minutes = inferred_travel["min_travel_minutes"]
-        if inferred_travel["travel_minutes"]:
+        if inferred_travel["travel_minutes"] and not (bare_numeric_reply and state.travel_minutes is not None):
             state.travel_minutes = inferred_travel["travel_minutes"]
-        if inferred_travel["search_radius_meters"]:
+        if inferred_travel["search_radius_meters"] and not (bare_numeric_reply and state.travel_minutes is not None):
             state.search_radius_meters = inferred_travel["search_radius_meters"]
-        if inferred_travel["travel_minutes"] or inferred_travel["travel_mode"]:
+        if (
+            inferred_travel["travel_mode"]
+            or (inferred_travel["travel_minutes"] and not (bare_numeric_reply and state.travel_minutes is not None))
+        ):
             traces.append(
                 AgentTrace(
                     self.name,
@@ -912,6 +1068,22 @@ class IntentAgent:
         if inferred_rating is not None:
             state.min_rating = inferred_rating
             traces.append(AgentTrace(self.name, "slot_fill", f"Captured minimum rating: {inferred_rating}."))
+
+        if (
+            not state.user_location
+            and not state.manual_location
+            and (not inferred_dish or not inferred_cuisine)
+            and inferred_rating is None
+            and not inferred_travel["travel_mode"]
+            and not inferred_travel["travel_minutes"]
+            and not inferred_when
+            and len(cleaned.split()) <= 6
+        ):
+            state.location_mode = "manual"
+            state.manual_location = message.strip()
+            if inferred_dish and not inferred_cuisine:
+                state.dish = previous_dish
+            traces.append(AgentTrace(self.name, "location_capture", "Treated the latest short reply as a manual location."))
 
         if state.location_mode == "manual" and state.manual_location and not state.user_location:
             state.user_location = geocode_location(state.manual_location)
@@ -926,17 +1098,22 @@ class ClarificationAgent:
 
     def next_question(self, state: ConversationState) -> Optional[str]:
         if state.llm_next_question:
-            return state.llm_next_question
-        if not state.cuisine and is_vague_food_request(state.dish):
-            return "What cuisine are you in the mood for?"
+            if not question_requests_cuisine(state.llm_next_question):
+                return state.llm_next_question
+        if not state.dish and not state.cuisine:
+            return "What would you like to eat?"
         if state.location_mode == "manual" and not state.manual_location:
             return "What location are you thinking of? You can type a place name or coordinates."
         if not state.location_mode and not state.user_location:
             return "Can I use your current location, or do you want to enter the location manually?"
+        if not state.when:
+            return "When are you looking to eat?"
         if not state.travel_minutes:
             if state.travel_mode:
                 return "How long are you willing to travel?"
             return "How long are you willing to travel, and is that by walk, public transport, or car?"
+        if state.min_rating is None:
+            return "What's the minimum rating you'd accept?"
         return None
 
 
@@ -945,10 +1122,12 @@ class RetrievalAgent:
 
     def ready_for_search(self, state: ConversationState) -> bool:
         return bool(
-            state.cuisine
+            (state.cuisine or state.dish)
             and (state.user_location or state.location_mode)
             and (state.location_mode != "manual" or state.manual_location)
+            and state.when
             and state.travel_minutes
+            and state.min_rating is not None
         )
 
     def run(self, state: ConversationState, limit: int) -> tuple[List[dict], List[AgentTrace]]:
@@ -978,9 +1157,9 @@ class RetrievalAgent:
             text_query=build_search_query(state),
             field_mask=(
                 "places.id,places.displayName,places.formattedAddress,places.location,"
-                "places.rating,places.userRatingCount,places.priceLevel,places.primaryTypeDisplayName"
+                "places.rating,places.userRatingCount,places.primaryTypeDisplayName"
             ),
-            max_result_count=max(limit, 12),
+            max_result_count=max(limit * 4, 30),
             location_bias=location_bias,
         )
 
@@ -989,7 +1168,7 @@ class RetrievalAgent:
             details = place_details(
                 place["id"],
                 (
-                    "id,displayName,formattedAddress,location,rating,userRatingCount,priceLevel,"
+                    "id,displayName,formattedAddress,location,rating,userRatingCount,"
                     "primaryTypeDisplayName,currentOpeningHours,regularOpeningHours,reviewSummary,editorialSummary,"
                     "googleMapsUri,websiteUri,photos"
                 ),
@@ -1021,10 +1200,6 @@ class RetrievalAgent:
             ):
                 continue
 
-            raw_price_level = details.get("priceLevel")
-            if not isinstance(raw_price_level, int):
-                raw_price_level = place.get("priceLevel")
-            price_level = raw_price_level if isinstance(raw_price_level, int) else None
             menu_verification = verify_dish_availability(details.get("websiteUri"), state.dish, details.get("photos"))
             score = float(details.get("rating", 0) or 0) * 2.0
             score += min(details.get("userRatingCount", 0), 3000) / 1000
@@ -1052,13 +1227,13 @@ class RetrievalAgent:
                 "address": details.get("formattedAddress"),
                 "rating": details.get("rating"),
                 "user_rating_count": details.get("userRatingCount"),
-                "price_level": price_level,
                 "distance_miles": distance_miles,
                 "estimated_travel_minutes": estimated_travel_minutes,
                 "travel_estimates": travel_estimates,
                 "primary_type": details.get("primaryTypeDisplayName", {}).get("text"),
                 "open_now": open_now,
                 "open_at_requested_time": open_at_requested_time,
+                "opening_hours_summary": opening_hours_summary(details),
                 "summary": (
                     details.get("reviewSummary", {}).get("text")
                     if isinstance(details.get("reviewSummary"), dict)
@@ -1101,7 +1276,6 @@ class RetrievalAgent:
         return state.last_results, traces
 
     def _sort_key(self, place: dict, state: ConversationState) -> tuple:
-        price_level = place.get("price_level")
         rating = float(place.get("rating") or 0.0)
         review_count = int(place.get("user_rating_count") or 0)
         score = float(place.get("score") or 0.0)
@@ -1237,6 +1411,9 @@ class ResponseAgent:
             lines.append("It appears to be open right now.")
         elif place.get("open_now") is False:
             lines.append("It does not appear to be open right now.")
+
+        if place.get("opening_hours_summary"):
+            lines.append(f"Hours: {place['opening_hours_summary']}")
 
         if state.when == "later" and place.get("open_at_requested_time") is True:
             target_dt = requested_datetime_for_state(state)
