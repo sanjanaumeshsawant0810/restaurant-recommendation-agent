@@ -650,6 +650,33 @@ def find_follow_up_place(message: str, results: List[dict]) -> Optional[dict]:
             return place
         if cleaned_name.startswith("the ") and cleaned_name[4:] in cleaned_message:
             return place
+        compact_name = re.sub(r"[^a-z0-9]+", " ", cleaned_name).strip()
+        if compact_name and compact_name in cleaned_message:
+            return place
+
+    message_tokens = {
+        token
+        for token in re.split(r"\s+", cleaned_message)
+        if token and token not in {"tell", "me", "about", "more", "info", "details", "restaurant", "place", "the"}
+    }
+    if not message_tokens:
+        return None
+
+    best_place = None
+    best_score = 0
+    for place in results:
+        cleaned_name = normalize_text(place.get("name") or "")
+        place_tokens = {
+            token
+            for token in re.split(r"\s+", re.sub(r"[^a-z0-9]+", " ", cleaned_name))
+            if token and token not in {"restaurant", "cafe", "bar", "grill", "kitchen", "co", "cof", "the"}
+        }
+        overlap = len(message_tokens & place_tokens)
+        if overlap > best_score:
+            best_score = overlap
+            best_place = place
+    if best_score >= 2:
+        return best_place
     return None
 
 
@@ -1876,6 +1903,17 @@ class CoordinatorAgent:
                     "Response Agent",
                     "place_follow_up",
                     f"Answered a follow-up question about {follow_up_place['name']} from the existing results.",
+                )
+            )
+            append_message(state, "assistant", reply)
+            return self._payload(session_id, state, reply, state.last_results, traces)
+        if state.last_results and is_place_follow_up_request(message):
+            reply = "I can help with that place, but I couldn't tell which recommendation you meant. Mention the restaurant name again, or say something like 'tell me about the second one.'"
+            traces.append(
+                AgentTrace(
+                    "Clarification Agent",
+                    "follow_up_clarify",
+                    "Asked the user to clarify which existing recommendation they meant.",
                 )
             )
             append_message(state, "assistant", reply)
