@@ -2,6 +2,11 @@
 
 InstaDine is an agentic AI restaurant recommendation product with a runnable web interface. The system accepts natural language requests, asks for any missing constraints, grounds recommendations in live Google Places data, verifies requested dishes from menus when possible, keeps saved chats per signed-in user, and shows results on a live map.
 
+## Live demo
+
+- Public app: [https://restaurant-recommendation-agent.onrender.com](https://restaurant-recommendation-agent.onrender.com)
+- Source code: [https://github.com/sanjanaumeshsawant0810/restaurant-recommendation-agent](https://github.com/sanjanaumeshsawant0810/restaurant-recommendation-agent)
+
 ## Why this fits the course
 
 This project is intentionally designed as an **agentic AI product**, not just a restaurant search page.
@@ -42,15 +47,15 @@ That gives you:
 
 ### Backend
 
-- [app.py](/Users/sanjanasawant/Desktop/AI%20and%20LLM/app.py): Flask app, auth, chat/session storage, agent orchestration, ranking, and response logic
-- [places_restaurant_chatbot.py](/Users/sanjanasawant/Desktop/AI%20and%20LLM/places_restaurant_chatbot.py): Google Places helpers, Gemini integration, scraping, OCR, and utility functions
+- `app.py`: Flask app, auth, chat/session storage, agent orchestration, ranking, and response logic
+- `places_restaurant_chatbot.py`: Google Places helpers, Gemini integration, scraping, OCR, and utility functions
 
 ### Frontend
 
-- [templates/index.html](/Users/sanjanasawant/Desktop/AI%20and%20LLM/templates/index.html): app shell
-- [templates/auth.html](/Users/sanjanasawant/Desktop/AI%20and%20LLM/templates/auth.html): sign-in, sign-up, forgot-password, and reset-password pages
-- [static/app.js](/Users/sanjanasawant/Desktop/AI%20and%20LLM/static/app.js): chat flow, map rendering, saved chat handling, and trace toggle behavior
-- [static/style.css](/Users/sanjanasawant/Desktop/AI%20and%20LLM/static/style.css): styling
+- `templates/index.html`: app shell
+- `templates/auth.html`: sign-in, sign-up, forgot-password, and reset-password pages
+- `static/app.js`: chat flow, map rendering, saved chat handling, and trace toggle behavior
+- `static/style.css`: styling
 
 ## Storage
 
@@ -67,31 +72,37 @@ The SQLite database is created locally under `data/instadine.db`.
 
 ## How to run locally
 
-1. Open a terminal and go to the project folder:
+1. Clone the repository:
 
 ```bash
-cd "/Users/sanjanasawant/Desktop/AI and LLM"
+git clone https://github.com/sanjanaumeshsawant0810/restaurant-recommendation-agent.git
 ```
 
-2. Create a virtual environment:
+2. Open a terminal and go to the project folder:
+
+```bash
+cd restaurant-recommendation-agent
+```
+
+3. Create a virtual environment:
 
 ```bash
 python3 -m venv .venv
 ```
 
-3. Activate it:
+4. Activate it:
 
 ```bash
 source .venv/bin/activate
 ```
 
-4. Install dependencies:
+5. Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-5. Set environment variables:
+6. Set environment variables:
 
 ```bash
 export FLASK_SECRET_KEY="your_random_secret_here"
@@ -111,7 +122,7 @@ Notes:
 - If `GEMINI_API_KEY` is missing, the app falls back to rule-based interpretation.
 - By default, the **final deployed response wording does not use Gemini**, because the local formatter is more reliable on constrained hosting. If you want Gemini to write the final recommendation text too, set `ENABLE_GEMINI_FINAL_RESPONSE=true`.
 
-6. Start the app:
+7. Start the app:
 
 ```bash
 python3 app.py
