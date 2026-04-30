@@ -34,6 +34,7 @@ from places_restaurant_chatbot import (
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "instadine-dev-secret-key")
 app.permanent_session_lifetime = timedelta(days=30)
+ENABLE_GEMINI_FINAL_RESPONSE = os.getenv("ENABLE_GEMINI_FINAL_RESPONSE", "").lower() in {"1", "true", "yes", "on"}
 
 TRAVEL_TIME_LEEWAY_MINUTES = 20
 APP_TIMEZONE = ZoneInfo("America/New_York")
@@ -1744,7 +1745,7 @@ class ResponseAgent:
     name = "Response Agent"
 
     def build_reply(self, state: ConversationState, results: List[dict], limit: int) -> str:
-        if gemini_enabled():
+        if ENABLE_GEMINI_FINAL_RESPONSE and gemini_enabled():
             try:
                 llm_reply = build_final_response_with_gemini(asdict(state), results, limit)
                 if llm_reply:
