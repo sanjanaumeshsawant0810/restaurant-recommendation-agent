@@ -104,6 +104,10 @@ SCRAPER_USER_AGENT = (
 )
 PLACE_PHOTO_MEDIA_URL = "https://places.googleapis.com/v1/{photo_name}/media"
 MENU_VERIFICATION_CACHE: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+MENU_LINK_FETCH_LIMIT = 3
+PLACE_PHOTO_OCR_LIMIT = 2
+WEBSITE_REQUEST_TIMEOUT_SECONDS = 8
+PLACES_REQUEST_TIMEOUT_SECONDS = 15
 
 
 def normalize_text(text: str) -> str:
@@ -235,7 +239,7 @@ def _fetch_place_photo_content(photo_name: str, max_width_px: int = 1600) -> Opt
         response = requests.get(
             PLACE_PHOTO_MEDIA_URL.format(photo_name=photo_name),
             params={"key": PLACES_API_KEY, "maxWidthPx": max_width_px},
-            timeout=30,
+            timeout=WEBSITE_REQUEST_TIMEOUT_SECONDS,
             allow_redirects=True,
         )
         response.raise_for_status()
@@ -264,7 +268,7 @@ def verify_dish_availability(
         }
 
     photo_names = _place_photo_names(place_photos)
-    cache_key = (website_url or "", cleaned_dish, "|".join(photo_names[:4]))
+    cache_key = (website_url or "", cleaned_dish, "|".join(photo_names[:PLACE_PHOTO_OCR_LIMIT]))
     if cache_key in MENU_VERIFICATION_CACHE:
         return MENU_VERIFICATION_CACHE[cache_key]
 
@@ -282,7 +286,7 @@ def verify_dish_availability(
     session = _requests_session()
     if website_url:
         try:
-            response = session.get(website_url, timeout=20)
+            response = session.get(website_url, timeout=WEBSITE_REQUEST_TIMEOUT_SECONDS)
             response.raise_for_status()
         except Exception:
             response = None
@@ -301,9 +305,9 @@ def verify_dish_availability(
                 MENU_VERIFICATION_CACHE[cache_key] = result
                 return result
 
-            for target_url, _label in _candidate_menu_links(website_url, html):
+            for target_url, _label in _candidate_menu_links(website_url, html)[:MENU_LINK_FETCH_LIMIT]:
                 try:
-                    linked_response = session.get(target_url, timeout=20)
+                    linked_response = session.get(target_url, timeout=WEBSITE_REQUEST_TIMEOUT_SECONDS)
                     linked_response.raise_for_status()
                 except Exception:
                     continue
@@ -358,7 +362,7 @@ def verify_dish_availability(
                     MENU_VERIFICATION_CACHE[cache_key] = result
                     return result
 
-    for photo_name in photo_names[:4]:
+    for photo_name in photo_names[:PLACE_PHOTO_OCR_LIMIT]:
         content = _fetch_place_photo_content(photo_name)
         if not content:
             continue
@@ -560,7 +564,12 @@ def places_text_search(text_query: str, field_mask: str, max_result_count: int =
     if location_bias:
         payload["locationBias"] = location_bias
 
-    response = requests.post(PLACES_TEXT_SEARCH_URL, headers=headers, json=payload, timeout=30)
+    response = requests.post(
+        PLACES_TEXT_SEARCH_URL,
+        headers=headers,
+        json=payload,
+        timeout=PLACES_REQUEST_TIMEOUT_SECONDS,
+    )
     response.raise_for_status()
     return response.json().get("places", [])
 
@@ -571,7 +580,11 @@ def place_details(place_id: str, field_mask: str) -> dict:
         "X-Goog-Api-Key": PLACES_API_KEY,
         "X-Goog-FieldMask": field_mask,
     }
-    response = requests.get(PLACES_DETAILS_URL.format(place_id=place_id), headers=headers, timeout=30)
+    response = requests.get(
+        PLACES_DETAILS_URL.format(place_id=place_id),
+        headers=headers,
+        timeout=PLACES_REQUEST_TIMEOUT_SECONDS,
+    )
     response.raise_for_status()
     return response.json()
 
