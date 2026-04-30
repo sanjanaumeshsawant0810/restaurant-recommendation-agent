@@ -108,6 +108,10 @@ MENU_LINK_FETCH_LIMIT = 3
 PLACE_PHOTO_OCR_LIMIT = 2
 WEBSITE_REQUEST_TIMEOUT_SECONDS = 4
 PLACES_REQUEST_TIMEOUT_SECONDS = 15
+MAX_HTML_PREVIEW_BYTES = 200_000
+ENABLE_PLACE_PHOTO_OCR = os.getenv("ENABLE_PLACE_PHOTO_OCR", "").lower() in {"1", "true", "yes", "on"}
+MAX_OCR_IMAGE_DIMENSION = 1400
+OCR_TIMEOUT_SECONDS = 2
 
 
 def normalize_text(text: str) -> str:
@@ -150,6 +154,46 @@ def _extract_visible_text(html: str) -> str:
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
     return normalize_text(soup.get_text(" ", strip=True))
+
+
+def _fetch_html_preview(session: requests.Session, url: str) -> Optional[str]:
+    try:
+        response = session.get(
+            url,
+            timeout=WEBSITE_REQUEST_TIMEOUT_SECONDS,
+            stream=True,
+            allow_redirects=True,
+        )
+        response.raise_for_status()
+    except Exception:
+        return None
+
+    content_type = (response.headers.get("Content-Type") or "").lower()
+    if "html" not in content_type and "text" not in content_type:
+        response.close()
+        return None
+
+    try:
+        chunks: List[bytes] = []
+        total = 0
+        for chunk in response.iter_content(chunk_size=8192):
+            if not chunk:
+                continue
+            remaining = MAX_HTML_PREVIEW_BYTES - total
+            if remaining <= 0:
+                break
+            if len(chunk) > remaining:
+                chunks.append(chunk[:remaining])
+                total += remaining
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        encoding = response.encoding or response.apparent_encoding or "utf-8"
+        return b"".join(chunks).decode(encoding, errors="ignore")
+    except Exception:
+        return None
+    finally:
+        response.close()
 
 
 def _candidate_menu_links(base_url: str, html: str) -> List[Tuple[str, str]]:
@@ -218,7 +262,12 @@ def _extract_image_text(content: bytes) -> Optional[str]:
         return None
     try:
         image = Image.open(io.BytesIO(content))
-        return pytesseract.image_to_string(image)
+        image.load()
+        if image.mode not in {"RGB", "L"}:
+            image = image.convert("RGB")
+        if max(image.size) > MAX_OCR_IMAGE_DIMENSION:
+            image.thumbnail((MAX_OCR_IMAGE_DIMENSION, MAX_OCR_IMAGE_DIMENSION))
+        return pytesseract.image_to_string(image, timeout=OCR_TIMEOUT_SECONDS)
     except Exception:
         return None
 
@@ -285,13 +334,8 @@ def verify_dish_availability(
 
     session = _requests_session()
     if website_url:
-        try:
-            response = session.get(website_url, timeout=WEBSITE_REQUEST_TIMEOUT_SECONDS)
-            response.raise_for_status()
-        except Exception:
-            response = None
-        if response is not None:
-            html = response.text
+        html = _fetch_html_preview(session, website_url)
+        if html:
             visible_text = _extract_visible_text(html)
             evidence = _find_dish_in_text(visible_text, cleaned_dish)
             if evidence:
@@ -306,15 +350,13 @@ def verify_dish_availability(
                 return result
 
             for target_url, _label in _candidate_menu_links(website_url, html)[:MENU_LINK_FETCH_LIMIT]:
-                try:
-                    linked_response = session.get(target_url, timeout=WEBSITE_REQUEST_TIMEOUT_SECONDS)
-                    linked_response.raise_for_status()
-                except Exception:
-                    continue
-
                 lowered = target_url.lower()
-                content_type = (linked_response.headers.get("Content-Type") or "").lower()
-                if ".pdf" in lowered or "pdf" in content_type:
+                if ".pdf" in lowered:
+                    try:
+                        linked_response = session.get(target_url, timeout=WEBSITE_REQUEST_TIMEOUT_SECONDS)
+                        linked_response.raise_for_status()
+                    except Exception:
+                        continue
                     try:
                         pdf_text = _extract_pdf_text(linked_response.content)
                     except Exception:
@@ -332,7 +374,12 @@ def verify_dish_availability(
                         return result
                     continue
 
-                if any(image_ext in lowered for image_ext in [".png", ".jpg", ".jpeg", ".webp"]) or content_type.startswith("image/"):
+                if any(image_ext in lowered for image_ext in [".png", ".jpg", ".jpeg", ".webp"]):
+                    try:
+                        linked_response = session.get(target_url, timeout=WEBSITE_REQUEST_TIMEOUT_SECONDS)
+                        linked_response.raise_for_status()
+                    except Exception:
+                        continue
                     image_text = _extract_image_text(linked_response.content)
                     if image_text is None:
                         continue
@@ -349,7 +396,10 @@ def verify_dish_availability(
                         return result
                     continue
 
-                linked_text = _extract_visible_text(linked_response.text)
+                linked_html = _fetch_html_preview(session, target_url)
+                if not linked_html:
+                    continue
+                linked_text = _extract_visible_text(linked_html)
                 evidence = _find_dish_in_text(linked_text, cleaned_dish)
                 if evidence:
                     result = {
@@ -362,24 +412,25 @@ def verify_dish_availability(
                     MENU_VERIFICATION_CACHE[cache_key] = result
                     return result
 
-    for photo_name in photo_names[:PLACE_PHOTO_OCR_LIMIT]:
-        content = _fetch_place_photo_content(photo_name)
-        if not content:
-            continue
-        image_text = _extract_image_text(content)
-        if image_text is None:
-            continue
-        evidence = _find_dish_in_text(image_text, cleaned_dish)
-        if evidence:
-            result = {
-                "status": "verified_places_photo_ocr",
-                "label": f"verified from a Google Places photo via OCR for {cleaned_dish}",
-                "verified": True,
-                "source_url": photo_name,
-                "evidence": evidence,
-            }
-            MENU_VERIFICATION_CACHE[cache_key] = result
-            return result
+    if ENABLE_PLACE_PHOTO_OCR:
+        for photo_name in photo_names[:PLACE_PHOTO_OCR_LIMIT]:
+            content = _fetch_place_photo_content(photo_name)
+            if not content:
+                continue
+            image_text = _extract_image_text(content)
+            if image_text is None:
+                continue
+            evidence = _find_dish_in_text(image_text, cleaned_dish)
+            if evidence:
+                result = {
+                    "status": "verified_places_photo_ocr",
+                    "label": f"verified from a Google Places photo via OCR for {cleaned_dish}",
+                    "verified": True,
+                    "source_url": photo_name,
+                    "evidence": evidence,
+                }
+                MENU_VERIFICATION_CACHE[cache_key] = result
+                return result
 
     result = {
         "status": "not_verified",

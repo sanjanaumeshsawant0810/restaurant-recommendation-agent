@@ -972,7 +972,7 @@ def format_travel_window(min_minutes: Optional[int], max_minutes: Optional[int])
 
 def infer_travel_preferences(message: str) -> Dict[str, Optional[int]]:
     cleaned = normalize_text(message)
-    walk_requested = any(word in cleaned for word in ["walk", "walking", "by foot", "on foot"])
+    walk_requested = any(word in cleaned for word in ["walk", "walking", "foot", "by foot", "on foot"])
     car_requested = any(word in cleaned for word in ["car", "drive", "driving"])
     transit_requested = any(
         phrase in cleaned for phrase in ["public transport", "public transit", "subway", "train", "bus", "transit"]
