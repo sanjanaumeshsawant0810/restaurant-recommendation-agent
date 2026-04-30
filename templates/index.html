@@ -16,6 +16,14 @@
   <body>
     <main class="app-shell">
       <section class="chat-panel">
+        <div class="account-bar">
+          <div class="account-badge">
+            Signed in as {{ current_user.name }}
+          </div>
+          <form method="post" action="/logout">
+            <button class="account-logout" type="submit">Log out</button>
+          </form>
+        </div>
         <div class="chat-layout">
           <button id="chat-drawer-toggle" class="chat-drawer-toggle" type="button" aria-expanded="false" aria-controls="session-sidebar">
             Chats
@@ -36,7 +44,7 @@
 
           <div class="chat-main">
             <header class="hero">
-              <p class="eyebrow hero-title">Restaurant Recommender</p>
+              <p class="eyebrow hero-title">InstaDine</p>
               <h1>Find a place that fits what you want to eat.</h1>
               <p class="subcopy">
                 Tell me what you want to eat, when you want to eat, where you are,
@@ -72,19 +80,15 @@
         </div>
 
         <div class="insight-card">
-          <div class="map-copy">
-            <p class="eyebrow">Agent Trace</p>
-            <h2>What the agents just did.</h2>
+          <div class="insight-header">
+            <div class="map-copy">
+              <p class="eyebrow">Agent Trace</p>
+            </div>
+            <button id="trace-toggle" class="trace-toggle" type="button" aria-expanded="false" aria-controls="agent-trace">
+              Show trace
+            </button>
           </div>
-          <div id="agent-trace" class="trace-list"></div>
-        </div>
-
-        <div class="insight-card">
-          <div class="map-copy">
-            <p class="eyebrow">Architecture</p>
-            <h2>Why this fits an agentic AI project.</h2>
-          </div>
-          <ul id="project-summary" class="summary-list"></ul>
+          <div id="agent-trace" class="trace-list trace-list-hidden"></div>
         </div>
       </aside>
     </main>

@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% if mode == "signup" %}Create your InstaDine account{% else %}Sign in to InstaDine{% endif %}</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main class="auth-shell">
+      <section class="auth-hero">
+        <div class="auth-hero-copy">
+          <p class="eyebrow hero-title">InstaDine</p>
+          {% if mode == "signup" %}
+            <h1>Create an account for saved restaurant discovery.</h1>
+            <p class="subcopy">
+              Keep your chats private, return to old searches, and pick up the conversation whenever you want.
+            </p>
+          {% elif mode == "forgot" %}
+            <h1>Reset your password.</h1>
+            <p class="subcopy">
+              Enter your email and I’ll help you get back into your saved chats.
+            </p>
+          {% elif mode == "reset" %}
+            <h1>Choose a new password.</h1>
+            <p class="subcopy">
+              Set a new password for your InstaDine account and sign back in.
+            </p>
+          {% else %}
+            <h1>Pick up right where you left off.</h1>
+            <p class="subcopy">
+              Sign in to keep your chats private, save multiple restaurant searches, and come back to them later.
+            </p>
+          {% endif %}
+        </div>
+        <div class="auth-visual-frame">
+          <img src="/static/auth-dining-photo.png" alt="InstaDine dining illustration" class="auth-visual-image" />
+        </div>
+      </section>
+
+      <section class="auth-card-grid">
+        {% if mode == "signup" %}
+          <article class="auth-card">
+            <p class="eyebrow">Create Account</p>
+            <h2>Start saving your searches.</h2>
+            {% if signup_error %}
+              <div class="auth-error">{{ signup_error }}</div>
+            {% endif %}
+            <form class="auth-form" method="post" action="/signup">
+              <label>
+                Name
+                <input type="text" name="name" value="{{ signup_name or '' }}" required />
+              </label>
+              <label>
+                Email
+                <input type="email" name="email" value="{{ signup_email or '' }}" required />
+              </label>
+              <label>
+                Password
+                <input type="password" name="password" minlength="8" required />
+              </label>
+              <label class="checkbox-row">
+                <input type="checkbox" name="remember_me" checked />
+                <span>Remember me</span>
+              </label>
+              <button type="submit">Create Account</button>
+            </form>
+            <p class="auth-switch">
+              Already have an account?
+              <a href="/login">Sign in</a>
+            </p>
+          </article>
+        {% elif mode == "forgot" %}
+          <article class="auth-card">
+            <p class="eyebrow">Forgot Password</p>
+            <h2>Let’s get you back in.</h2>
+            {% if forgot_error %}
+              <div class="auth-error">{{ forgot_error }}</div>
+            {% endif %}
+            {% if forgot_success %}
+              <div class="auth-success">{{ forgot_success }}</div>
+            {% endif %}
+            <form class="auth-form" method="post" action="/forgot-password">
+              <label>
+                Email
+                <input type="email" name="email" value="{{ forgot_email or '' }}" required />
+              </label>
+              <button type="submit">Send Reset Link</button>
+            </form>
+            {% if forgot_reset_link %}
+              <p class="auth-helper">
+                Local reset link:
+                <a href="{{ forgot_reset_link }}">{{ forgot_reset_link }}</a>
+              </p>
+            {% endif %}
+            <p class="auth-switch">
+              Remembered it?
+              <a href="/login">Back to sign in</a>
+            </p>
+          </article>
+        {% elif mode == "reset" %}
+          <article class="auth-card">
+            <p class="eyebrow">Set New Password</p>
+            <h2>Choose something secure.</h2>
+            {% if reset_error %}
+              <div class="auth-error">{{ reset_error }}</div>
+            {% endif %}
+            <form class="auth-form" method="post" action="/reset-password/{{ reset_token }}">
+              <label>
+                New Password
+                <input type="password" name="password" minlength="8" required />
+              </label>
+              <label>
+                Confirm Password
+                <input type="password" name="confirm_password" minlength="8" required />
+              </label>
+              <button type="submit">Reset Password</button>
+            </form>
+            <p class="auth-switch">
+              Changed your mind?
+              <a href="/login">Back to sign in</a>
+            </p>
+          </article>
+        {% else %}
+          <article class="auth-card">
+            <p class="eyebrow">Sign In</p>
+            <h2>Welcome back.</h2>
+            {% if login_error %}
+              <div class="auth-error">{{ login_error }}</div>
+            {% endif %}
+            {% if login_success %}
+              <div class="auth-success">{{ login_success }}</div>
+            {% endif %}
+            <form class="auth-form" method="post" action="/login">
+              <label>
+                Email
+                <input type="email" name="email" value="{{ login_email or '' }}" required />
+              </label>
+              <label>
+                Password
+                <input type="password" name="password" required />
+              </label>
+              <label class="checkbox-row">
+                <input type="checkbox" name="remember_me" />
+                <span>Remember me</span>
+              </label>
+              <button type="submit">Sign In</button>
+            </form>
+            <p class="auth-helper">
+              <a href="/forgot-password">Forgot password?</a>
+            </p>
+            <p class="auth-switch">
+              New here?
+              <a href="/signup">Create an account</a>
+            </p>
+          </article>
+        {% endif %}
+      </section>
+    </main>
+  </body>
+</html>

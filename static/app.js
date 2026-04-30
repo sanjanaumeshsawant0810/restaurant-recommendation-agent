@@ -9,7 +9,7 @@ const chatDrawerClose = document.getElementById("chat-drawer-close");
 const sessionSidebar = document.getElementById("session-sidebar");
 const mapStatus = document.getElementById("map-status");
 const agentTrace = document.getElementById("agent-trace");
-const projectSummary = document.getElementById("project-summary");
+const traceToggle = document.getElementById("trace-toggle");
 const sessionList = document.getElementById("session-list");
 
 let sessionId = null;
@@ -37,6 +37,10 @@ function setDrawerOpen(isOpen) {
 async function requestJson(url, options = {}) {
   const response = await fetch(url, options);
   const data = await response.json().catch(() => ({}));
+  if (response.status === 401) {
+    window.location.href = "/";
+    throw new Error(data.error || "Please sign in to continue.");
+  }
   if (!response.ok) {
     throw new Error(data.error || data.message || data.reply || `Request failed with status ${response.status}`);
   }
@@ -148,6 +152,9 @@ async function deleteSession(targetSessionId) {
 }
 
 function renderAgentTrace(traceItems = []) {
+  if (!agentTrace) {
+    return;
+  }
   agentTrace.innerHTML = "";
   if (!traceItems.length) {
     agentTrace.innerHTML = "<div class='trace-item'>The agent trace will appear after the first turn.</div>";
@@ -165,25 +172,21 @@ function renderAgentTrace(traceItems = []) {
   });
 }
 
-function renderProjectSummary(summary) {
-  projectSummary.innerHTML = "";
-  const architecture = summary?.architecture || [];
-  if (!architecture.length) {
-    return;
-  }
-  architecture.forEach((item) => {
-    const node = document.createElement("li");
-    node.textContent = item;
-    projectSummary.appendChild(node);
-  });
-}
-
 function initMap() {
   map = L.map("map").setView([40.7128, -74.006], 12);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
     attribution: "&copy; OpenStreetMap contributors",
   }).addTo(map);
+}
+
+function setTraceOpen(isOpen) {
+  if (!agentTrace || !traceToggle) {
+    return;
+  }
+  agentTrace.classList.toggle("trace-list-hidden", !isOpen);
+  traceToggle.setAttribute("aria-expanded", String(isOpen));
+  traceToggle.textContent = isOpen ? "Hide trace" : "Show trace";
 }
 
 function clearMarkers() {
@@ -298,7 +301,7 @@ async function createSession() {
   renderMessages(data.messages || []);
   clearMarkers();
   renderAgentTrace([]);
-  renderProjectSummary({});
+  setTraceOpen(false);
   mapStatus.textContent = "The map will update after the backend finds places.";
 }
 
@@ -314,7 +317,6 @@ async function loadSession(targetSessionId) {
   renderMessages(data.messages || []);
   updateMap(data.user_location, data.results || []);
   renderAgentTrace(data.agent_trace || []);
-  renderProjectSummary(data.project_summary || {});
   await refreshSessions();
   setDrawerOpen(false);
 }
@@ -352,7 +354,6 @@ chatForm.addEventListener("submit", async (event) => {
     renderMessages(data.messages || []);
     updateMap(data.user_location, data.results || []);
     renderAgentTrace(data.agent_trace || []);
-    renderProjectSummary(data.project_summary || {});
     await refreshSessions();
   } catch (error) {
     addMessage("assistant", `Something went wrong: ${error.message}`);
@@ -377,6 +378,11 @@ chatDrawerClose.addEventListener("click", () => {
   setDrawerOpen(false);
 });
 
+traceToggle?.addEventListener("click", () => {
+  const isOpen = traceToggle.getAttribute("aria-expanded") === "true";
+  setTraceOpen(!isOpen);
+});
+
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     setDrawerOpen(false);
@@ -385,6 +391,7 @@ document.addEventListener("keydown", (event) => {
 
 window.addEventListener("load", async () => {
   initMap();
+  setTraceOpen(false);
   await refreshSessions();
   if (sessions.length) {
     await loadSession(sessions[0].session_id);

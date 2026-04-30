@@ -1,15 +1,22 @@
 import json
 import os
 import re
+import secrets
+import sqlite3
 import uuid
+import smtplib
+import ssl
+from functools import wraps
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
+from email.message import EmailMessage
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, redirect, render_template, request, session, url_for
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from places_restaurant_chatbot import (
     analyze_app_turn_with_gemini,
@@ -25,11 +32,15 @@ from places_restaurant_chatbot import (
 
 
 app = Flask(__name__)
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "instadine-dev-secret-key")
+app.permanent_session_lifetime = timedelta(days=30)
 
 TRAVEL_TIME_LEEWAY_MINUTES = 20
 APP_TIMEZONE = ZoneInfo("America/New_York")
 DATA_DIR = Path(__file__).resolve().parent / "data"
 SESSION_STORE_PATH = DATA_DIR / "chat_sessions.json"
+USER_STORE_PATH = DATA_DIR / "users.json"
+DB_PATH = DATA_DIR / "instadine.db"
 DEFAULT_ASSISTANT_MESSAGE = "If there is something you want to eat, I’ll help you find it."
 
 
@@ -144,8 +155,7 @@ class AgentTrace:
     details: str
 
 
-SESSIONS: Dict[str, ConversationState] = {}
-SESSIONS_LOCK = Lock()
+DB_LOCK = Lock()
 
 
 def now_iso() -> str:
@@ -159,21 +169,30 @@ def build_session_title(message: str) -> str:
     return cleaned[:60] + ("..." if len(cleaned) > 60 else "")
 
 
-def session_to_dict(state: ConversationState) -> Dict[str, Any]:
-    return asdict(state)
+def normalize_email(value: str) -> str:
+    return " ".join((value or "").strip().lower().split())
 
 
-def session_from_dict(data: Dict[str, Any]) -> ConversationState:
+def state_payload_from_state(state: ConversationState) -> Dict[str, Any]:
+    payload = asdict(state)
+    payload.pop("messages", None)
+    payload.pop("title", None)
+    payload.pop("created_at", None)
+    payload.pop("updated_at", None)
+    return payload
+
+
+def state_from_payload(data: Dict[str, Any], title: str, created_at: Optional[str], updated_at: Optional[str], messages: List[dict]) -> ConversationState:
     state = ConversationState()
     for field_name in state.__dataclass_fields__:
+        if field_name in {"messages", "title", "created_at", "updated_at"}:
+            continue
         if field_name in data:
             setattr(state, field_name, data[field_name])
-    if not state.created_at:
-        state.created_at = now_iso()
-    if not state.updated_at:
-        state.updated_at = state.created_at
-    if not state.messages:
-        state.messages = [{"role": "assistant", "text": DEFAULT_ASSISTANT_MESSAGE}]
+    state.title = title or "New chat"
+    state.created_at = created_at or now_iso()
+    state.updated_at = updated_at or state.created_at
+    state.messages = messages or [{"role": "assistant", "text": DEFAULT_ASSISTANT_MESSAGE}]
     return state
 
 
@@ -182,24 +201,225 @@ def append_message(state: ConversationState, role: str, text: str) -> None:
     state.updated_at = now_iso()
 
 
-def save_sessions_to_disk() -> None:
+def db_connection() -> sqlite3.Connection:
     DATA_DIR.mkdir(exist_ok=True)
-    payload = {session_id: session_to_dict(state) for session_id, state in SESSIONS.items()}
-    SESSION_STORE_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+    connection = sqlite3.connect(DB_PATH)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    return connection
 
 
-def load_sessions_from_disk() -> None:
-    if not SESSION_STORE_PATH.exists():
-        return
+def init_db() -> None:
+    with DB_LOCK:
+        connection = db_connection()
+        try:
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    email TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS chat_sessions (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    state_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                    token TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    used_at TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+
+def fetch_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
+    connection = db_connection()
     try:
-        raw = json.loads(SESSION_STORE_PATH.read_text())
+        row = connection.execute(
+            "SELECT id, name, email, password_hash, created_at FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+    finally:
+        connection.close()
+    if row is None:
+        return None
+    return dict(row)
+
+
+def fetch_user_by_email(email: str) -> Optional[Dict[str, Any]]:
+    normalized = normalize_email(email)
+    connection = db_connection()
+    try:
+        row = connection.execute(
+            "SELECT id, name, email, password_hash, created_at FROM users WHERE email = ?",
+            (normalized,),
+        ).fetchone()
+    finally:
+        connection.close()
+    if row is None:
+        return None
+    return dict(row)
+
+
+def create_user_record(name: str, email: str, password_hash: str) -> str:
+    user_id = uuid.uuid4().hex
+    created_at = now_iso()
+    with DB_LOCK:
+        connection = db_connection()
+        try:
+            connection.execute(
+                "INSERT INTO users (id, name, email, password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+                (user_id, name, normalize_email(email), password_hash, created_at),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+    return user_id
+
+
+def password_reset_delivery_available() -> bool:
+    return bool(
+        os.getenv("SMTP_HOST")
+        and os.getenv("SMTP_USERNAME")
+        and os.getenv("SMTP_PASSWORD")
+        and os.getenv("SMTP_FROM_EMAIL")
+    )
+
+
+def create_password_reset_token(user_id: str) -> str:
+    token = secrets.token_urlsafe(32)
+    created_at = now_iso()
+    expires_at = (datetime.now(APP_TIMEZONE) + timedelta(hours=1)).isoformat()
+    with DB_LOCK:
+        connection = db_connection()
+        try:
+            connection.execute("DELETE FROM password_reset_tokens WHERE user_id = ?", (user_id,))
+            connection.execute(
+                "INSERT INTO password_reset_tokens (token, user_id, expires_at, used_at, created_at) VALUES (?, ?, ?, NULL, ?)",
+                (token, user_id, expires_at, created_at),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+    return token
+
+
+def fetch_password_reset_token(token: str) -> Optional[Dict[str, Any]]:
+    connection = db_connection()
+    try:
+        row = connection.execute(
+            """
+            SELECT prt.token, prt.user_id, prt.expires_at, prt.used_at, prt.created_at,
+                   u.email, u.name
+            FROM password_reset_tokens prt
+            JOIN users u ON u.id = prt.user_id
+            WHERE prt.token = ?
+            """,
+            (token,),
+        ).fetchone()
+    finally:
+        connection.close()
+    return dict(row) if row else None
+
+
+def password_reset_token_is_valid(token_row: Optional[Dict[str, Any]]) -> bool:
+    if not token_row or token_row.get("used_at"):
+        return False
+    try:
+        expires_at = datetime.fromisoformat(token_row["expires_at"])
     except Exception:
-        return
-    if not isinstance(raw, dict):
-        return
-    for session_id, payload in raw.items():
-        if isinstance(payload, dict):
-            SESSIONS[session_id] = session_from_dict(payload)
+        return False
+    return expires_at >= datetime.now(APP_TIMEZONE)
+
+
+def mark_password_reset_token_used(token: str) -> None:
+    with DB_LOCK:
+        connection = db_connection()
+        try:
+            connection.execute(
+                "UPDATE password_reset_tokens SET used_at = ? WHERE token = ?",
+                (now_iso(), token),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+
+def update_user_password(user_id: str, password_hash: str) -> None:
+    with DB_LOCK:
+        connection = db_connection()
+        try:
+            connection.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ?",
+                (password_hash, user_id),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+
+def send_password_reset_email(recipient_email: str, recipient_name: str, reset_link: str) -> None:
+    smtp_host = os.getenv("SMTP_HOST")
+    smtp_username = os.getenv("SMTP_USERNAME")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    smtp_from_email = os.getenv("SMTP_FROM_EMAIL")
+    if not all([smtp_host, smtp_username, smtp_password, smtp_from_email]):
+        raise RuntimeError("SMTP is not configured.")
+
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    use_tls = os.getenv("SMTP_USE_TLS", "true").lower() in {"1", "true", "yes", "on"}
+
+    message = EmailMessage()
+    message["Subject"] = "Reset your InstaDine password"
+    message["From"] = smtp_from_email
+    message["To"] = recipient_email
+    message.set_content(
+        f"""Hi {recipient_name or 'there'},
+
+We received a request to reset your InstaDine password.
+
+Use this link to choose a new password:
+{reset_link}
+
+This link expires in 1 hour. If you did not request this, you can ignore this email.
+"""
+    )
+
+    if use_tls:
+        context = ssl.create_default_context()
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.starttls(context=context)
+            server.login(smtp_username, smtp_password)
+            server.send_message(message)
+    else:
+        with smtplib.SMTP_SSL(smtp_host, smtp_port) as server:
+            server.login(smtp_username, smtp_password)
+            server.send_message(message)
 
 
 def session_summary(session_id: str, state: ConversationState) -> Dict[str, Any]:
@@ -223,10 +443,179 @@ def initialize_session_state(state: ConversationState) -> ConversationState:
     return state
 
 
-def get_state(session_id: str) -> ConversationState:
-    with SESSIONS_LOCK:
-        state = SESSIONS.setdefault(session_id, ConversationState())
-        return initialize_session_state(state)
+def create_session_record(user_id: str) -> tuple[str, ConversationState]:
+    session_id = uuid.uuid4().hex
+    state = initialize_session_state(ConversationState())
+    state.created_at = now_iso()
+    state.updated_at = state.created_at
+    state.title = "New chat"
+    state.messages = [{"role": "assistant", "text": DEFAULT_ASSISTANT_MESSAGE}]
+    with DB_LOCK:
+        connection = db_connection()
+        try:
+            connection.execute(
+                "INSERT INTO chat_sessions (id, user_id, title, state_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    session_id,
+                    user_id,
+                    state.title,
+                    json.dumps(state_payload_from_state(state), ensure_ascii=False),
+                    state.created_at,
+                    state.updated_at,
+                ),
+            )
+            for message in state.messages:
+                connection.execute(
+                    "INSERT INTO chat_messages (session_id, role, text, created_at) VALUES (?, ?, ?, ?)",
+                    (session_id, message["role"], message["text"], state.created_at),
+                )
+            connection.commit()
+        finally:
+            connection.close()
+    return session_id, state
+
+
+def list_sessions_for_user(user_id: str) -> List[Dict[str, Any]]:
+    connection = db_connection()
+    try:
+        rows = connection.execute(
+            "SELECT id, title, created_at, updated_at FROM chat_sessions WHERE user_id = ? ORDER BY updated_at DESC",
+            (user_id,),
+        ).fetchall()
+    finally:
+        connection.close()
+    return [
+        {
+            "session_id": row["id"],
+            "title": row["title"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def load_session_state(user_id: str, session_id: str) -> Optional[ConversationState]:
+    connection = db_connection()
+    try:
+        session_row = connection.execute(
+            "SELECT id, title, state_json, created_at, updated_at FROM chat_sessions WHERE id = ? AND user_id = ?",
+            (session_id, user_id),
+        ).fetchone()
+        if session_row is None:
+            return None
+        message_rows = connection.execute(
+            "SELECT role, text FROM chat_messages WHERE session_id = ? ORDER BY id ASC",
+            (session_id,),
+        ).fetchall()
+    finally:
+        connection.close()
+
+    try:
+        payload = json.loads(session_row["state_json"] or "{}")
+    except Exception:
+        payload = {}
+    messages = [{"role": row["role"], "text": row["text"]} for row in message_rows]
+    return initialize_session_state(
+        state_from_payload(payload, session_row["title"], session_row["created_at"], session_row["updated_at"], messages)
+    )
+
+
+def save_session_state(user_id: str, session_id: str, state: ConversationState) -> None:
+    state = initialize_session_state(state)
+    with DB_LOCK:
+        connection = db_connection()
+        try:
+            owned = connection.execute(
+                "SELECT 1 FROM chat_sessions WHERE id = ? AND user_id = ?",
+                (session_id, user_id),
+            ).fetchone()
+            if owned is None:
+                raise ValueError("Session not found")
+            connection.execute(
+                "UPDATE chat_sessions SET title = ?, state_json = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+                (
+                    state.title,
+                    json.dumps(state_payload_from_state(state), ensure_ascii=False),
+                    state.updated_at or now_iso(),
+                    session_id,
+                    user_id,
+                ),
+            )
+            connection.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+            for message in state.messages:
+                connection.execute(
+                    "INSERT INTO chat_messages (session_id, role, text, created_at) VALUES (?, ?, ?, ?)",
+                    (session_id, message["role"], message["text"], now_iso()),
+                )
+            connection.commit()
+        finally:
+            connection.close()
+
+
+def delete_session_record(user_id: str, session_id: str) -> bool:
+    with DB_LOCK:
+        connection = db_connection()
+        try:
+            cursor = connection.execute(
+                "DELETE FROM chat_sessions WHERE id = ? AND user_id = ?",
+                (session_id, user_id),
+            )
+            connection.commit()
+            return cursor.rowcount > 0
+        finally:
+            connection.close()
+
+
+def current_user_id() -> Optional[str]:
+    user_id = session.get("user_id")
+    if isinstance(user_id, str) and fetch_user_by_id(user_id):
+        return user_id
+    return None
+
+
+def current_user() -> Optional[Dict[str, Any]]:
+    user_id = current_user_id()
+    if not user_id:
+        return None
+    user = fetch_user_by_id(user_id)
+    if not user:
+        return None
+    return {"user_id": user["id"], **user}
+
+
+def find_user_by_email(email: str) -> Optional[Dict[str, Any]]:
+    user = fetch_user_by_email(email)
+    if not user:
+        return None
+    return {"user_id": user["id"], **user}
+
+
+def login_user(user_id: str, remember_me: bool) -> None:
+    session["user_id"] = user_id
+    session.permanent = bool(remember_me)
+
+
+def logout_user() -> None:
+    session.pop("user_id", None)
+
+
+def login_required(view_func):
+    @wraps(view_func)
+    def wrapped(*args, **kwargs):
+        if not current_user_id():
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "Please sign in to continue."}), 401
+            return redirect(url_for("index"))
+        return view_func(*args, **kwargs)
+
+    return wrapped
+
+def get_state(user_id: str, session_id: str) -> ConversationState:
+    state = load_session_state(user_id, session_id)
+    if state is None:
+        raise ValueError("Session not found")
+    return state
 
 
 def is_place_follow_up_request(message: str) -> bool:
@@ -284,7 +673,7 @@ def summary_text(value: Any) -> Optional[str]:
     return None
 
 
-load_sessions_from_disk()
+init_db()
 
 
 def parse_top_k_request(message: str) -> Optional[int]:
@@ -1506,51 +1895,218 @@ class CoordinatorAgent:
             "state": asdict(state),
             "session": session_summary(session_id, state),
             "agent_trace": [asdict(trace) for trace in traces],
-            "project_summary": {
-                "title": "Agentic Dining Assistant",
-                "architecture": [
-                    "Intent Agent: extracts slots like cuisine, time, location, and travel preference.",
-                    "Clarification Agent: asks only for missing information before search.",
-                    "Retrieval Agent: grounds results in live Google Places data and ranks candidates.",
-                    "Response Agent: explains why each recommendation matches or misses criteria.",
-                ],
-            },
+            "project_summary": project_summary_payload(),
         }
 
 
 coordinator = CoordinatorAgent()
 
 
+def project_summary_payload() -> Dict[str, Any]:
+    return {
+        "title": "Agentic Dining Assistant",
+        "architecture": [
+            "Intent Agent: extracts slots like item, time, location, rating, and travel preference.",
+            "Clarification Agent: asks only for missing information before search.",
+            "Retrieval Agent: grounds results in live Google Places data and ranks candidates.",
+            "Response Agent: explains why each recommendation matches or misses criteria.",
+        ],
+    }
+
+
 @app.get("/")
 def index():
-    return render_template("index.html")
+    user = current_user()
+    if not user:
+        return render_template("auth.html", mode="signin")
+    return render_template("index.html", current_user=user)
+
+
+@app.get("/login")
+def auth_entry():
+    if current_user():
+        return redirect(url_for("index"))
+    return render_template("auth.html", mode="signin")
+
+
+@app.get("/signup")
+def signup_entry():
+    if current_user():
+        return redirect(url_for("index"))
+    return render_template("auth.html", mode="signup")
+
+
+@app.get("/forgot-password")
+def forgot_password_entry():
+    if current_user():
+        return redirect(url_for("index"))
+    return render_template("auth.html", mode="forgot")
+
+
+@app.post("/forgot-password")
+def forgot_password():
+    if current_user():
+        return redirect(url_for("index"))
+    email = normalize_email(request.form.get("email", ""))
+    generic_message = "If that email exists in InstaDine, a password reset link has been prepared."
+    user = find_user_by_email(email) if email else None
+
+    context: Dict[str, Any] = {
+        "mode": "forgot",
+        "forgot_success": generic_message,
+        "forgot_email": email,
+    }
+
+    if user:
+        token = create_password_reset_token(user["user_id"])
+        reset_link = url_for("reset_password_entry", token=token, _external=True)
+        try:
+            send_password_reset_email(user["email"], user.get("name") or "", reset_link)
+            context["forgot_success"] = "If that email exists in InstaDine, a password reset link has been sent."
+        except Exception:
+            if request.host.startswith("127.0.0.1") or request.host.startswith("localhost"):
+                context["forgot_success"] = "Email sending is not configured yet. Use the reset link below for local testing."
+                context["forgot_reset_link"] = reset_link
+    return render_template("auth.html", **context)
+
+
+@app.get("/reset-password/<token>")
+def reset_password_entry(token: str):
+    if current_user():
+        return redirect(url_for("index"))
+    token_row = fetch_password_reset_token(token)
+    if not password_reset_token_is_valid(token_row):
+        return render_template(
+            "auth.html",
+            mode="forgot",
+            forgot_error="That reset link is invalid or has expired. Request a new one below.",
+        ), 400
+    return render_template("auth.html", mode="reset", reset_token=token)
+
+
+@app.post("/login")
+def login():
+    email = normalize_email(request.form.get("email", ""))
+    password = request.form.get("password", "")
+    remember_me = request.form.get("remember_me") == "on"
+    user = find_user_by_email(email)
+    if not user or not check_password_hash(user.get("password_hash", ""), password):
+        return render_template(
+            "auth.html",
+            mode="signin",
+            login_error="Invalid email or password.",
+            login_email=email,
+        ), 401
+    login_user(user["user_id"], remember_me)
+    return redirect(url_for("index"))
+
+
+@app.post("/signup")
+def signup():
+    name = " ".join((request.form.get("name", "")).strip().split())
+    email = normalize_email(request.form.get("email", ""))
+    password = request.form.get("password", "")
+    remember_me = request.form.get("remember_me") == "on"
+
+    if not name:
+        return render_template("auth.html", mode="signup", signup_error="Please enter your name.", signup_email=email), 400
+    if not email or "@" not in email:
+        return render_template("auth.html", mode="signup", signup_error="Please enter a valid email.", signup_name=name), 400
+    if len(password) < 8:
+        return render_template(
+            "auth.html",
+            mode="signup",
+            signup_error="Password must be at least 8 characters.",
+            signup_name=name,
+            signup_email=email,
+        ), 400
+    if find_user_by_email(email):
+        return render_template(
+            "auth.html",
+            mode="signup",
+            signup_error="An account with that email already exists.",
+            signup_name=name,
+            signup_email=email,
+        ), 400
+
+    user_id = create_user_record(name, email, generate_password_hash(password))
+    login_user(user_id, remember_me)
+    return redirect(url_for("index"))
+
+
+@app.post("/reset-password/<token>")
+def reset_password(token: str):
+    if current_user():
+        return redirect(url_for("index"))
+    token_row = fetch_password_reset_token(token)
+    if not password_reset_token_is_valid(token_row):
+        return render_template(
+            "auth.html",
+            mode="forgot",
+            forgot_error="That reset link is invalid or has expired. Request a new one below.",
+        ), 400
+
+    password = request.form.get("password", "")
+    confirm_password = request.form.get("confirm_password", "")
+    if len(password) < 8:
+        return render_template(
+            "auth.html",
+            mode="reset",
+            reset_token=token,
+            reset_error="Password must be at least 8 characters.",
+        ), 400
+    if password != confirm_password:
+        return render_template(
+            "auth.html",
+            mode="reset",
+            reset_token=token,
+            reset_error="Passwords do not match.",
+        ), 400
+
+    update_user_password(token_row["user_id"], generate_password_hash(password))
+    mark_password_reset_token_used(token)
+    return render_template(
+        "auth.html",
+        mode="signin",
+        login_success="Your password has been reset. Sign in with the new password.",
+        login_email=token_row["email"],
+    )
+
+
+@app.post("/logout")
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for("index"))
 
 
 @app.post("/api/session")
+@login_required
 def create_session():
-    session_id = uuid.uuid4().hex
-    state = get_state(session_id)
-    state.created_at = now_iso()
-    state.updated_at = state.created_at
-    state.title = "New chat"
-    state.messages = [{"role": "assistant", "text": DEFAULT_ASSISTANT_MESSAGE}]
-    with SESSIONS_LOCK:
-        save_sessions_to_disk()
+    user_id = current_user_id()
+    if not user_id:
+        return jsonify({"error": "Please sign in to continue."}), 401
+    session_id, state = create_session_record(user_id)
     return jsonify({"session_id": session_id, "session": session_summary(session_id, state), "messages": state.messages})
 
 
 @app.get("/api/sessions")
+@login_required
 def list_sessions():
-    with SESSIONS_LOCK:
-        sessions = [session_summary(session_id, state) for session_id, state in SESSIONS.items()]
-    sessions.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
+    user_id = current_user_id()
+    if not user_id:
+        return jsonify({"error": "Please sign in to continue."}), 401
+    sessions = list_sessions_for_user(user_id)
     return jsonify({"sessions": sessions})
 
 
 @app.get("/api/session/<session_id>")
+@login_required
 def get_session(session_id: str):
-    with SESSIONS_LOCK:
-        state = SESSIONS.get(session_id)
+    user_id = current_user_id()
+    if not user_id:
+        return jsonify({"error": "Please sign in to continue."}), 401
+    state = load_session_state(user_id, session_id)
     if state is None:
         return jsonify({"error": "Session not found"}), 404
     return jsonify(
@@ -1561,30 +2117,25 @@ def get_session(session_id: str):
             "results": state.last_results,
             "user_location": state.user_location,
             "agent_trace": [],
-            "project_summary": {
-                "title": "Agentic Dining Assistant",
-                "architecture": [
-                    "Intent Agent: extracts slots like cuisine, time, location, and travel preference.",
-                    "Clarification Agent: asks only for missing information before search.",
-                    "Retrieval Agent: grounds results in live Google Places data and ranks candidates.",
-                    "Response Agent: explains why each recommendation matches or misses criteria.",
-                ],
-            },
+            "project_summary": project_summary_payload(),
         }
     )
 
 
 @app.delete("/api/session/<session_id>")
+@login_required
 def delete_session(session_id: str):
-    with SESSIONS_LOCK:
-        state = SESSIONS.pop(session_id, None)
-        if state is None:
-            return jsonify({"error": "Session not found"}), 404
-        save_sessions_to_disk()
+    user_id = current_user_id()
+    if not user_id:
+        return jsonify({"error": "Please sign in to continue."}), 401
+    deleted = delete_session_record(user_id, session_id)
+    if not deleted:
+        return jsonify({"error": "Session not found"}), 404
     return jsonify({"deleted_session_id": session_id})
 
 
 @app.post("/api/chat")
+@login_required
 def chat():
     payload = request.get_json(force=True)
     session_id = payload.get("session_id")
@@ -1596,12 +2147,14 @@ def chat():
         return jsonify({"error": "Missing message"}), 400
 
     browser_location = payload.get("browser_location")
-    state = get_state(session_id)
+    user_id = current_user_id()
+    if not user_id:
+        return jsonify({"error": "Please sign in to continue."}), 401
+    state = get_state(user_id, session_id)
 
     try:
         response_payload = coordinator.handle_turn(session_id, state, message, browser_location)
-        with SESSIONS_LOCK:
-            save_sessions_to_disk()
+        save_session_state(user_id, session_id, state)
         return jsonify(response_payload)
     except Exception as exc:
         return jsonify(
@@ -1619,4 +2172,8 @@ def chat():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=int(os.getenv("PORT", "5001")))
+    app.run(
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "5001")),
+        debug=os.getenv("FLASK_DEBUG", "").lower() in {"1", "true", "yes", "on"},
+    )
