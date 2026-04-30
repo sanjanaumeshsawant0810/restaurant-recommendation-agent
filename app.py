@@ -1589,7 +1589,6 @@ class RetrievalAgent:
             ):
                 continue
 
-            menu_verification = verify_dish_availability(details.get("websiteUri"), state.dish, details.get("photos"))
             score = float(details.get("rating", 0) or 0) * 2.0
             score += min(details.get("userRatingCount", 0), 3000) / 1000
             score += max(0.0, 5.0 - min(distance_miles, 5.0))
@@ -1600,11 +1599,6 @@ class RetrievalAgent:
                     else state.travel_minutes
                 )
                 score += max(0.0, 3.0 - abs(preferred_center - estimated_travel_minutes) / 5.0)
-            if state.dish:
-                if menu_verification.get("verified"):
-                    score += 3.0
-                elif menu_verification.get("status") == "not_verified":
-                    score -= 2.0
             if state.when == "later":
                 if open_at_requested_time is True:
                     score += 2.0
@@ -1634,7 +1628,14 @@ class RetrievalAgent:
                     else details.get("editorialSummary")
                 ),
                 "website_url": details.get("websiteUri"),
-                "menu_verification": menu_verification,
+                "menu_verification": {
+                    "status": "not_attempted",
+                    "label": "verification not attempted yet",
+                    "verified": False,
+                    "source_url": details.get("websiteUri"),
+                    "evidence": None,
+                },
+                "place_photos": details.get("photos") or [],
                 "google_maps_url": details.get("googleMapsUri"),
                 "directions_url": build_directions_url(
                     state.user_location,
@@ -1645,14 +1646,31 @@ class RetrievalAgent:
                 "lng": location.get("longitude"),
                 "score": round(score, 2),
             }
+            results.append(result)
+
+        ranked_results = sorted(results, key=lambda item: self._sort_key(item, state), reverse=True)
+        verification_budget = min(len(ranked_results), max(limit, 3))
+        if state.dish:
+            for place in ranked_results[:verification_budget]:
+                place["menu_verification"] = verify_dish_availability(
+                    place.get("website_url"),
+                    state.dish,
+                    place.get("place_photos"),
+                )
+                if place["menu_verification"].get("verified"):
+                    place["score"] = round(float(place.get("score") or 0.0) + 3.0, 2)
+                elif place["menu_verification"].get("status") == "not_verified":
+                    place["score"] = round(float(place.get("score") or 0.0) - 2.0, 2)
+
+        for result in ranked_results:
             result["unmet_criteria"] = unmet_criteria_for_place(result, state)
             result["matched_criteria"] = self._matched_criteria(result, state)
             result["verification_status"] = verification_status_for_place(result, state)
             result["confidence_score"] = confidence_score_for_place(result, state)
             result["confidence_label"] = confidence_label(result["confidence_score"])
-            results.append(result)
+            result.pop("place_photos", None)
 
-        ranked_results = sorted(results, key=lambda item: self._sort_key(item, state), reverse=True)
+        ranked_results = sorted(ranked_results, key=lambda item: self._sort_key(item, state), reverse=True)
         state.last_results = self._diversify_results(ranked_results, limit)
         state.last_limit = limit
         traces.append(
