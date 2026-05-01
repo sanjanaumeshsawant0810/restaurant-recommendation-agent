@@ -32,6 +32,7 @@ function setDrawerOpen(isOpen) {
   sessionSidebar.classList.toggle("open", isOpen);
   chatDrawerBackdrop.classList.toggle("open", isOpen);
   chatDrawerToggle.setAttribute("aria-expanded", String(isOpen));
+  document.body.classList.toggle("drawer-open", isOpen);
 }
 
 async function requestJson(url, options = {}) {

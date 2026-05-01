@@ -27,6 +27,10 @@ body {
     linear-gradient(135deg, #efe4c8, #f5ecd7 46%, #e1d3b6);
 }
 
+body.drawer-open {
+  overflow: hidden;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 1.05fr 0.95fr;
@@ -701,5 +705,192 @@ body {
 
   #map {
     min-height: 360px;
+  }
+}
+
+@media (max-width: 720px) {
+  body {
+    overflow-x: hidden;
+  }
+
+  .app-shell {
+    gap: 18px;
+    padding: 14px;
+  }
+
+  .chat-panel,
+  .map-card,
+  .insight-card {
+    border-radius: 24px;
+  }
+
+  .chat-panel {
+    padding: 16px;
+    height: calc(100dvh - 28px);
+    min-height: calc(100dvh - 28px);
+  }
+
+  .account-bar {
+    justify-content: space-between;
+    align-items: stretch;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .account-badge,
+  .account-logout {
+    min-height: 48px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .account-badge {
+    flex: 1 1 180px;
+    padding: 10px 14px;
+    text-align: center;
+  }
+
+  .account-bar form {
+    flex: 0 0 auto;
+  }
+
+  .chat-layout {
+    overflow: visible;
+  }
+
+  .chat-drawer-toggle {
+    position: relative;
+    z-index: 7;
+    margin-bottom: 10px;
+  }
+
+  .chat-drawer-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 19;
+    background: rgba(32, 35, 52, 0.18);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .chat-drawer-backdrop.open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .session-sidebar {
+    position: fixed;
+    top: 96px;
+    left: 14px;
+    right: 14px;
+    bottom: auto;
+    z-index: 20;
+    width: auto;
+    max-height: min(58vh, 480px);
+    padding: 16px 14px 14px;
+    overflow: hidden;
+    background: rgba(250, 244, 228, 0.98);
+    border: 1px solid var(--line);
+    border-radius: 24px;
+    box-shadow: 0 18px 50px rgba(32, 35, 52, 0.18);
+    transform: translateY(-16px);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .session-sidebar.open {
+    transform: translateY(0);
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .session-sidebar-header {
+    padding-left: 0;
+  }
+
+  .session-list {
+    padding: 0;
+  }
+
+  .session-row {
+    grid-template-columns: 1fr;
+  }
+
+  .session-delete {
+    justify-self: end;
+  }
+
+  .hero {
+    margin-bottom: 4px;
+  }
+
+  .hero-title {
+    font-size: clamp(2.8rem, 10vw, 3.7rem);
+    letter-spacing: 0.04em;
+    margin-bottom: 8px;
+  }
+
+  .hero h1 {
+    font-size: clamp(1.85rem, 7vw, 2.35rem);
+    line-height: 1.06;
+  }
+
+  .subcopy,
+  .map-status {
+    font-size: 0.98rem;
+    line-height: 1.35;
+  }
+
+  .chat-log {
+    flex: 1 1 auto;
+    min-height: 280px;
+    gap: 12px;
+    margin: 10px 0;
+    padding-right: 0;
+  }
+
+  .message {
+    max-width: 92%;
+    padding: 13px 15px;
+    font-size: 0.98rem;
+  }
+
+  .chat-form {
+    grid-template-columns: 1fr auto;
+    gap: 10px;
+    position: sticky;
+    bottom: 0;
+    padding-top: 10px;
+    padding-bottom: 2px;
+  }
+
+  .chat-form textarea {
+    min-height: 56px;
+    padding: 14px 16px;
+  }
+
+  .chat-form button {
+    padding: 14px 18px;
+  }
+
+  .map-card,
+  .insight-card {
+    padding: 16px;
+  }
+
+  .map-panel {
+    min-height: 0;
+    gap: 14px;
+  }
+
+  #map {
+    min-height: 240px;
+  }
+
+  .trace-toggle {
+    padding: 7px 11px;
   }
 }
