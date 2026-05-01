@@ -1,0 +1,12 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+.Rhistory
+Agentic_Dining_Assistant_Presentation.pptx
+Final Presentation Script.docx
+data/*.db
