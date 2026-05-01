@@ -4,7 +4,7 @@ InstaDine is an agentic AI restaurant recommendation product with a runnable web
 
 ## Live demo
 
-- Public app: [https://restaurant-recommendation-agent.onrender.com](https://restaurant-recommendation-agent.onrender.com)
+- Public app: [https://restaurant-recommendation-agent-566313238923.us-east1.run.app](https://restaurant-recommendation-agent-566313238923.us-east1.run.app)
 - Source code: [https://github.com/sanjanaumeshsawant0810/restaurant-recommendation-agent](https://github.com/sanjanaumeshsawant0810/restaurant-recommendation-agent)
 
 ## Why this fits the course
