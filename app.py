@@ -174,6 +174,22 @@ def normalize_email(value: str) -> str:
     return " ".join((value or "").strip().lower().split())
 
 
+def mask_email(value: str) -> str:
+    email = normalize_email(value)
+    if not email or "@" not in email:
+        return ""
+    local_part, domain = email.split("@", 1)
+    if not local_part:
+        masked_local = "****"
+    elif len(local_part) == 1:
+        masked_local = f"{local_part}***"
+    elif len(local_part) == 2:
+        masked_local = f"{local_part[0]}***"
+    else:
+        masked_local = f"{local_part[0]}{'*' * max(3, len(local_part) - 2)}{local_part[-1]}"
+    return f"{masked_local}@{domain}"
+
+
 def state_payload_from_state(state: ConversationState) -> Dict[str, Any]:
     payload = asdict(state)
     payload.pop("messages", None)
@@ -2017,12 +2033,20 @@ def forgot_password():
     if user:
         token = create_password_reset_token(user["user_id"])
         reset_link = url_for("reset_password_entry", token=token, _external=True)
+        masked_user_email = mask_email(user["email"])
         try:
             send_password_reset_email(user["email"], user.get("name") or "", reset_link)
-            context["forgot_success"] = "If that email exists in InstaDine, a password reset link has been sent."
+            context["forgot_success"] = (
+                "If that email exists in InstaDine, a password reset link has been sent"
+                + (f" to {masked_user_email}." if masked_user_email else ".")
+            )
         except Exception:
             if request.host.startswith("127.0.0.1") or request.host.startswith("localhost"):
-                context["forgot_success"] = "Email sending is not configured yet. Use the reset link below for local testing."
+                context["forgot_success"] = (
+                    "Email sending is not configured yet."
+                    + (f" For {masked_user_email}," if masked_user_email else "")
+                    + " use the reset link below for local testing."
+                )
                 context["forgot_reset_link"] = reset_link
     return render_template("auth.html", **context)
 
@@ -2122,11 +2146,15 @@ def reset_password(token: str):
 
     update_user_password(token_row["user_id"], generate_password_hash(password))
     mark_password_reset_token_used(token)
+    masked_user_email = mask_email(token_row["email"])
     return render_template(
         "auth.html",
         mode="signin",
-        login_success="Your password has been reset. Sign in with the new password.",
-        login_email=token_row["email"],
+        login_success=(
+            "Your password has been reset"
+            + (f" for {masked_user_email}." if masked_user_email else ".")
+            + " Sign in with the new password."
+        ),
     )
 
 
