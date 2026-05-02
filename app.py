@@ -42,7 +42,10 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 SESSION_STORE_PATH = DATA_DIR / "chat_sessions.json"
 USER_STORE_PATH = DATA_DIR / "users.json"
 DB_PATH = DATA_DIR / "instadine.db"
-DEFAULT_ASSISTANT_MESSAGE = "If there is something you want to eat, I’ll help you find it."
+DEFAULT_ASSISTANT_MESSAGE = (
+    "Tell me what you want to eat, where you want to eat, and how far you're willing to travel. "
+    "If you want, you can also include timing, cuisine, or a minimum rating."
+)
 
 
 TOP_K_PATTERNS = {
@@ -1502,6 +1505,13 @@ class IntentAgent:
             state.min_rating = inferred_rating
             traces.append(AgentTrace(self.name, "slot_fill", f"Captured minimum rating: {inferred_rating}."))
 
+        if not state.when:
+            state.when = "now"
+            state.requested_day_offset = None
+            state.requested_hour = None
+            state.requested_minute = None
+            traces.append(AgentTrace(self.name, "default", "Assumed the user wants to eat right now because no future timing was specified."))
+
         if (
             not state.user_location
             and not state.manual_location
@@ -1539,14 +1549,10 @@ class ClarificationAgent:
             return "What location are you thinking of? You can type a place name or coordinates."
         if not state.location_mode and not state.user_location:
             return "Can I use your current location, or do you want to enter the location manually?"
-        if not state.when:
-            return "When are you looking to eat?"
         if not state.travel_minutes:
             if state.travel_mode:
                 return "How long are you willing to travel?"
             return "How long are you willing to travel, and is that by walk, public transport, or car?"
-        if state.min_rating is None:
-            return "What's the minimum rating you'd accept?"
         return None
 
 
@@ -1560,7 +1566,6 @@ class RetrievalAgent:
             and (state.location_mode != "manual" or state.manual_location)
             and state.when
             and state.travel_minutes
-            and state.min_rating is not None
         )
 
     def run(self, state: ConversationState, limit: int) -> tuple[List[dict], List[AgentTrace]]:

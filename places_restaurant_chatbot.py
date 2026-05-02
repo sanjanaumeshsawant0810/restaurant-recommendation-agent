@@ -465,6 +465,7 @@ Use the current state and the latest user message to update this exact shape:
 Rules:
 - The latest user message can override earlier preferences if it clearly changes the request.
 - Time means whether the user wants to eat now or later.
+- If the user does not specify a time, assume they mean now.
 - Infer cuisine from strong dishes when obvious, like pizza -> italian, dosa -> south indian, sushi -> japanese, tacos -> mexican, coffee -> coffee.
 - Cuisine is optional. Do not ask for cuisine unless the user explicitly asks for cuisine-specific recommendations.
 - If the user mentions a concrete place name or neighborhood, store it in manual_location and set location_mode to manual.
@@ -472,7 +473,8 @@ Rules:
 - If the user gives travel time, capture travel_minutes and travel_mode when stated.
 - If the user gives a range like 5 to 10 minutes, store min_travel_minutes=5 and travel_minutes=10.
 - If the user gives multiple acceptable travel modes, preserve that flexibility instead of collapsing it to just one mode.
-- Gather these before searching whenever they are missing: location, when, travel time, and minimum rating.
+- Gather these before searching whenever they are missing: location and travel time.
+- Minimum rating is optional. Capture it when the user gives it, but do not require it before search.
 - Ask only one short natural next question at a time.
 - Leave fields null when the value is unknown.
 """

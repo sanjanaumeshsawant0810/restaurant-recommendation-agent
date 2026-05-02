@@ -2,6 +2,7 @@ const chatLog = document.getElementById("chat-log");
 const chatForm = document.getElementById("chat-form");
 const chatInput = document.getElementById("chat-input");
 const sendButton = document.getElementById("send-button");
+const chatLoading = document.getElementById("chat-loading");
 const newChatButton = document.getElementById("new-chat-button");
 const chatDrawerToggle = document.getElementById("chat-drawer-toggle");
 const chatDrawerBackdrop = document.getElementById("chat-drawer-backdrop");
@@ -76,11 +77,22 @@ function addMessage(role, text) {
   });
   chatLog.appendChild(node);
   chatLog.scrollTop = chatLog.scrollHeight;
+  return node;
 }
 
 function renderMessages(messages = []) {
   chatLog.innerHTML = "";
   messages.forEach((message) => addMessage(message.role, message.text));
+}
+
+function setLoadingState(isLoading) {
+  if (chatLoading) {
+    chatLoading.classList.toggle("visible", isLoading);
+    chatLoading.setAttribute("aria-hidden", String(!isLoading));
+  }
+  chatForm.classList.toggle("is-loading", isLoading);
+  chatInput.disabled = isLoading;
+  sendButton.disabled = isLoading;
 }
 
 function formatSessionTimestamp(value) {
@@ -323,7 +335,7 @@ async function loadSession(targetSessionId) {
 }
 
 async function sendMessage(message) {
-  sendButton.disabled = true;
+  setLoadingState(true);
   try {
     const browserLocation = await getBrowserLocation();
     return await requestJson("/api/chat", {
@@ -336,7 +348,7 @@ async function sendMessage(message) {
       }),
     });
   } finally {
-    sendButton.disabled = false;
+    setLoadingState(false);
   }
 }
 
@@ -349,6 +361,7 @@ chatForm.addEventListener("submit", async (event) => {
   }
 
   chatInput.value = "";
+  addMessage("user", message);
 
   try {
     const data = await sendMessage(message);

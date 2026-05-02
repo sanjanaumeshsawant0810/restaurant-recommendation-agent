@@ -346,6 +346,10 @@ body.drawer-open {
   background: linear-gradient(180deg, rgba(225, 211, 182, 0), rgba(225, 211, 182, 0.92) 28%);
 }
 
+.chat-form.is-loading textarea {
+  opacity: 0.82;
+}
+
 .chat-form textarea {
   resize: none;
   border: 1px solid var(--line);
@@ -370,6 +374,43 @@ body.drawer-open {
 .chat-form button:disabled {
   opacity: 0.65;
   cursor: wait;
+}
+
+.chat-loading {
+  margin-top: 6px;
+  opacity: 0;
+  transform: translateY(2px);
+  pointer-events: none;
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.chat-loading.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.chat-loading-copy {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+}
+
+.chat-loading-bar {
+  position: relative;
+  overflow: hidden;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(61, 95, 130, 0.1);
+}
+
+.chat-loading-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 -24%;
+  width: 24%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), rgba(61, 95, 130, 0.88));
+  animation: sweepBar 0.95s infinite ease-in-out;
 }
 
 .map-panel {
@@ -517,6 +558,15 @@ body.drawer-open {
 .auth-helper {
   margin: 14px 0 0;
   color: var(--muted);
+}
+
+@keyframes sweepBar {
+  0% {
+    left: -24%;
+  }
+  100% {
+    left: 100%;
+  }
 }
 
 .auth-helper a {

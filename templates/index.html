@@ -47,8 +47,8 @@
               <p class="eyebrow hero-title">InstaDine</p>
               <h1>Find a place that fits what you want to eat.</h1>
               <p class="subcopy">
-                Tell me what you want to eat, when you want to eat, where you are,
-                and how far you're willing to travel for it.
+                Tell me what you want to eat, where you want to eat, and how far
+                you're willing to travel. Timing, cuisine, and rating are optional.
               </p>
             </header>
 
@@ -64,6 +64,12 @@
               ></textarea>
               <button id="send-button" type="submit">Send</button>
             </form>
+            <div id="chat-loading" class="chat-loading" aria-live="polite" aria-hidden="true">
+              <div class="chat-loading-copy">Working...</div>
+              <div class="chat-loading-bar" role="presentation">
+                <div class="chat-loading-bar-fill"></div>
+              </div>
+            </div>
           </div>
         </div>
       </section>
