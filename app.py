@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import re
 import secrets
@@ -47,6 +48,8 @@ DEFAULT_ASSISTANT_MESSAGE = (
     "Tell me what you want to eat, where you want to eat, and how far you're willing to travel. "
     "If you want, you can also include timing, cuisine, or a minimum rating."
 )
+BASELINE_PLACE_RATING = 4.2
+REVIEW_CONFIDENCE_PRIOR = 200
 
 
 TOP_K_PATTERNS = {
@@ -719,6 +722,30 @@ def summary_text(value: Any) -> Optional[str]:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
+
+
+def confidence_weighted_rating(rating: Any, review_count: Any) -> float:
+    try:
+        rating_value = float(rating or 0.0)
+    except (TypeError, ValueError):
+        rating_value = 0.0
+    try:
+        count_value = max(int(review_count or 0), 0)
+    except (TypeError, ValueError):
+        count_value = 0
+    if rating_value <= 0:
+        return 0.0
+    confidence = count_value / (count_value + REVIEW_CONFIDENCE_PRIOR)
+    return (confidence * rating_value) + ((1.0 - confidence) * BASELINE_PLACE_RATING)
+
+
+def review_volume_bonus(review_count: Any) -> float:
+    try:
+        count_value = max(int(review_count or 0), 0)
+    except (TypeError, ValueError):
+        return 0.0
+    capped = min(count_value, 5000)
+    return min(math.log1p(capped) / 4.0, 2.0)
 
 
 init_db()
@@ -1639,8 +1666,12 @@ class RetrievalAgent:
             ):
                 continue
 
-            score = float(details.get("rating", 0) or 0) * 2.0
-            score += min(details.get("userRatingCount", 0), 3000) / 1000
+            quality_rating = confidence_weighted_rating(
+                details.get("rating"),
+                details.get("userRatingCount"),
+            )
+            score = quality_rating * 3.0
+            score += review_volume_bonus(details.get("userRatingCount"))
             score += max(0.0, 5.0 - min(distance_miles, 5.0))
             if estimated_travel_minutes is not None and state.travel_minutes:
                 preferred_center = (
@@ -1660,6 +1691,7 @@ class RetrievalAgent:
                 "address": details.get("formattedAddress"),
                 "rating": details.get("rating"),
                 "user_rating_count": details.get("userRatingCount"),
+                "quality_rating": round(quality_rating, 3),
                 "distance_miles": distance_miles,
                 "estimated_travel_minutes": estimated_travel_minutes,
                 "travel_estimates": travel_estimates,
@@ -1732,6 +1764,7 @@ class RetrievalAgent:
     def _sort_key(self, place: dict, state: ConversationState) -> tuple:
         rating = float(place.get("rating") or 0.0)
         review_count = int(place.get("user_rating_count") or 0)
+        quality_rating = float(place.get("quality_rating") or 0.0)
         score = float(place.get("score") or 0.0)
         travel_minutes = place.get("estimated_travel_minutes")
         travel_gap = (
@@ -1740,7 +1773,7 @@ class RetrievalAgent:
             else 999
         )
 
-        return (score, rating, -travel_gap, min(review_count, 3000))
+        return (score, quality_rating, min(review_count, 3000), rating, -travel_gap)
 
     def _diversify_results(self, ranked_results: List[dict], limit: int) -> List[dict]:
         diversified: List[dict] = []
