@@ -19,6 +19,13 @@ from zoneinfo import ZoneInfo
 from flask import Flask, Response, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ImportError:
+    psycopg = None
+    dict_row = None
+
 from places_restaurant_chatbot import (
     analyze_app_turn_with_gemini,
     build_final_response_with_gemini,
@@ -44,6 +51,13 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 SESSION_STORE_PATH = DATA_DIR / "chat_sessions.json"
 USER_STORE_PATH = DATA_DIR / "users.json"
 DB_PATH = DATA_DIR / "instadine.db"
+DB_BACKEND = os.getenv("DB_BACKEND", "sqlite").strip().lower()
+DB_NAME = os.getenv("DB_NAME", "").strip()
+DB_USER = os.getenv("DB_USER", "").strip()
+DB_PASSWORD = os.getenv("DB_PASSWORD", "")
+DB_HOST = os.getenv("DB_HOST", "").strip()
+DB_PORT = int(os.getenv("DB_PORT", "5432"))
+INSTANCE_CONNECTION_NAME = os.getenv("INSTANCE_CONNECTION_NAME", "").strip()
 DEFAULT_ASSISTANT_MESSAGE = (
     "Tell me what you want to eat, where you want to eat, and how far you're willing to travel. "
     "If you want, you can also include timing, cuisine, or a minimum rating."
@@ -166,6 +180,39 @@ class AgentTrace:
 DB_LOCK = Lock()
 
 
+def using_postgres() -> bool:
+    return DB_BACKEND == "postgres"
+
+
+def db_sql(query: str) -> str:
+    if using_postgres():
+        return query.replace("?", "%s")
+    return query
+
+
+def _postgres_connect_kwargs() -> Dict[str, Any]:
+    kwargs: Dict[str, Any] = {
+        "dbname": DB_NAME,
+        "user": DB_USER,
+        "password": DB_PASSWORD,
+        "port": DB_PORT,
+    }
+    if INSTANCE_CONNECTION_NAME:
+        kwargs["host"] = f"/cloudsql/{INSTANCE_CONNECTION_NAME}"
+    elif DB_HOST:
+        kwargs["host"] = DB_HOST
+    if dict_row is not None:
+        kwargs["row_factory"] = dict_row
+    return kwargs
+
+
+def run_schema_statements(connection: Any, statements: List[str]) -> None:
+    for statement in statements:
+        cleaned = statement.strip()
+        if cleaned:
+            connection.execute(cleaned)
+
+
 def now_iso() -> str:
     return datetime.now(APP_TIMEZONE).isoformat()
 
@@ -225,7 +272,23 @@ def append_message(state: ConversationState, role: str, text: str) -> None:
     state.updated_at = now_iso()
 
 
-def db_connection() -> sqlite3.Connection:
+def db_connection() -> Any:
+    if using_postgres():
+        if psycopg is None:
+            raise RuntimeError("Postgres support requires psycopg to be installed.")
+        missing = [
+            name
+            for name, value in {
+                "DB_NAME": DB_NAME,
+                "DB_USER": DB_USER,
+                "DB_PASSWORD": DB_PASSWORD,
+            }.items()
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(f"Missing Postgres configuration: {', '.join(missing)}")
+        return psycopg.connect(**_postgres_connect_kwargs())
+
     DATA_DIR.mkdir(exist_ok=True)
     connection = sqlite3.connect(DB_PATH)
     connection.row_factory = sqlite3.Row
@@ -234,48 +297,92 @@ def db_connection() -> sqlite3.Connection:
 
 
 def init_db() -> None:
+    sqlite_schema = [
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            state_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            text TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+            token TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            used_at TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        """,
+    ]
+    postgres_schema = [
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            state_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id BIGSERIAL PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+            role TEXT NOT NULL,
+            text TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+            token TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            expires_at TEXT NOT NULL,
+            used_at TEXT,
+            created_at TEXT NOT NULL
+        )
+        """,
+    ]
+
     with DB_LOCK:
         connection = db_connection()
         try:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS users (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    email TEXT NOT NULL UNIQUE,
-                    password_hash TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS chat_sessions (
-                    id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    state_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-                );
-
-                CREATE TABLE IF NOT EXISTS chat_messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    text TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
-                );
-
-                CREATE TABLE IF NOT EXISTS password_reset_tokens (
-                    token TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    expires_at TEXT NOT NULL,
-                    used_at TEXT,
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-                );
-                """
-            )
+            run_schema_statements(connection, postgres_schema if using_postgres() else sqlite_schema)
             connection.commit()
         finally:
             connection.close()
@@ -285,14 +392,14 @@ def fetch_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
     connection = db_connection()
     try:
         row = connection.execute(
-            "SELECT id, name, email, password_hash, created_at FROM users WHERE id = ?",
+            db_sql("SELECT id, name, email, password_hash, created_at FROM users WHERE id = ?"),
             (user_id,),
         ).fetchone()
     finally:
         connection.close()
     if row is None:
         return None
-    return dict(row)
+    return dict(row) if not isinstance(row, dict) else row
 
 
 def fetch_user_by_email(email: str) -> Optional[Dict[str, Any]]:
@@ -300,14 +407,14 @@ def fetch_user_by_email(email: str) -> Optional[Dict[str, Any]]:
     connection = db_connection()
     try:
         row = connection.execute(
-            "SELECT id, name, email, password_hash, created_at FROM users WHERE email = ?",
+            db_sql("SELECT id, name, email, password_hash, created_at FROM users WHERE email = ?"),
             (normalized,),
         ).fetchone()
     finally:
         connection.close()
     if row is None:
         return None
-    return dict(row)
+    return dict(row) if not isinstance(row, dict) else row
 
 
 def create_user_record(name: str, email: str, password_hash: str) -> str:
@@ -317,7 +424,7 @@ def create_user_record(name: str, email: str, password_hash: str) -> str:
         connection = db_connection()
         try:
             connection.execute(
-                "INSERT INTO users (id, name, email, password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+                db_sql("INSERT INTO users (id, name, email, password_hash, created_at) VALUES (?, ?, ?, ?, ?)"),
                 (user_id, name, normalize_email(email), password_hash, created_at),
             )
             connection.commit()
@@ -342,9 +449,9 @@ def create_password_reset_token(user_id: str) -> str:
     with DB_LOCK:
         connection = db_connection()
         try:
-            connection.execute("DELETE FROM password_reset_tokens WHERE user_id = ?", (user_id,))
+            connection.execute(db_sql("DELETE FROM password_reset_tokens WHERE user_id = ?"), (user_id,))
             connection.execute(
-                "INSERT INTO password_reset_tokens (token, user_id, expires_at, used_at, created_at) VALUES (?, ?, ?, NULL, ?)",
+                db_sql("INSERT INTO password_reset_tokens (token, user_id, expires_at, used_at, created_at) VALUES (?, ?, ?, NULL, ?)"),
                 (token, user_id, expires_at, created_at),
             )
             connection.commit()
@@ -357,18 +464,20 @@ def fetch_password_reset_token(token: str) -> Optional[Dict[str, Any]]:
     connection = db_connection()
     try:
         row = connection.execute(
-            """
+            db_sql(
+                """
             SELECT prt.token, prt.user_id, prt.expires_at, prt.used_at, prt.created_at,
                    u.email, u.name
             FROM password_reset_tokens prt
             JOIN users u ON u.id = prt.user_id
             WHERE prt.token = ?
-            """,
+            """
+            ),
             (token,),
         ).fetchone()
     finally:
         connection.close()
-    return dict(row) if row else None
+    return (dict(row) if not isinstance(row, dict) else row) if row else None
 
 
 def password_reset_token_is_valid(token_row: Optional[Dict[str, Any]]) -> bool:
@@ -386,7 +495,7 @@ def mark_password_reset_token_used(token: str) -> None:
         connection = db_connection()
         try:
             connection.execute(
-                "UPDATE password_reset_tokens SET used_at = ? WHERE token = ?",
+                db_sql("UPDATE password_reset_tokens SET used_at = ? WHERE token = ?"),
                 (now_iso(), token),
             )
             connection.commit()
@@ -399,7 +508,7 @@ def update_user_password(user_id: str, password_hash: str) -> None:
         connection = db_connection()
         try:
             connection.execute(
-                "UPDATE users SET password_hash = ? WHERE id = ?",
+                db_sql("UPDATE users SET password_hash = ? WHERE id = ?"),
                 (password_hash, user_id),
             )
             connection.commit()
@@ -478,7 +587,7 @@ def create_session_record(user_id: str) -> tuple[str, ConversationState]:
         connection = db_connection()
         try:
             connection.execute(
-                "INSERT INTO chat_sessions (id, user_id, title, state_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                db_sql("INSERT INTO chat_sessions (id, user_id, title, state_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"),
                 (
                     session_id,
                     user_id,
@@ -490,7 +599,7 @@ def create_session_record(user_id: str) -> tuple[str, ConversationState]:
             )
             for message in state.messages:
                 connection.execute(
-                    "INSERT INTO chat_messages (session_id, role, text, created_at) VALUES (?, ?, ?, ?)",
+                    db_sql("INSERT INTO chat_messages (session_id, role, text, created_at) VALUES (?, ?, ?, ?)"),
                     (session_id, message["role"], message["text"], state.created_at),
                 )
             connection.commit()
@@ -503,17 +612,17 @@ def list_sessions_for_user(user_id: str) -> List[Dict[str, Any]]:
     connection = db_connection()
     try:
         rows = connection.execute(
-            "SELECT id, title, created_at, updated_at FROM chat_sessions WHERE user_id = ? ORDER BY updated_at DESC",
+            db_sql("SELECT id, title, created_at, updated_at FROM chat_sessions WHERE user_id = ? ORDER BY updated_at DESC"),
             (user_id,),
         ).fetchall()
     finally:
         connection.close()
     return [
         {
-            "session_id": row["id"],
-            "title": row["title"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
+            "session_id": row["id"] if isinstance(row, dict) else row["id"],
+            "title": row["title"] if isinstance(row, dict) else row["title"],
+            "created_at": row["created_at"] if isinstance(row, dict) else row["created_at"],
+            "updated_at": row["updated_at"] if isinstance(row, dict) else row["updated_at"],
         }
         for row in rows
     ]
@@ -523,13 +632,13 @@ def load_session_state(user_id: str, session_id: str) -> Optional[ConversationSt
     connection = db_connection()
     try:
         session_row = connection.execute(
-            "SELECT id, title, state_json, created_at, updated_at FROM chat_sessions WHERE id = ? AND user_id = ?",
+            db_sql("SELECT id, title, state_json, created_at, updated_at FROM chat_sessions WHERE id = ? AND user_id = ?"),
             (session_id, user_id),
         ).fetchone()
         if session_row is None:
             return None
         message_rows = connection.execute(
-            "SELECT role, text FROM chat_messages WHERE session_id = ? ORDER BY id ASC",
+            db_sql("SELECT role, text FROM chat_messages WHERE session_id = ? ORDER BY id ASC"),
             (session_id,),
         ).fetchall()
     finally:
@@ -551,13 +660,13 @@ def save_session_state(user_id: str, session_id: str, state: ConversationState) 
         connection = db_connection()
         try:
             owned = connection.execute(
-                "SELECT 1 FROM chat_sessions WHERE id = ? AND user_id = ?",
+                db_sql("SELECT 1 FROM chat_sessions WHERE id = ? AND user_id = ?"),
                 (session_id, user_id),
             ).fetchone()
             if owned is None:
                 raise ValueError("Session not found")
             connection.execute(
-                "UPDATE chat_sessions SET title = ?, state_json = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+                db_sql("UPDATE chat_sessions SET title = ?, state_json = ?, updated_at = ? WHERE id = ? AND user_id = ?"),
                 (
                     state.title,
                     json.dumps(state_payload_from_state(state), ensure_ascii=False),
@@ -566,10 +675,10 @@ def save_session_state(user_id: str, session_id: str, state: ConversationState) 
                     user_id,
                 ),
             )
-            connection.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+            connection.execute(db_sql("DELETE FROM chat_messages WHERE session_id = ?"), (session_id,))
             for message in state.messages:
                 connection.execute(
-                    "INSERT INTO chat_messages (session_id, role, text, created_at) VALUES (?, ?, ?, ?)",
+                    db_sql("INSERT INTO chat_messages (session_id, role, text, created_at) VALUES (?, ?, ?, ?)"),
                     (session_id, message["role"], message["text"], now_iso()),
                 )
             connection.commit()
@@ -582,7 +691,7 @@ def delete_session_record(user_id: str, session_id: str) -> bool:
         connection = db_connection()
         try:
             cursor = connection.execute(
-                "DELETE FROM chat_sessions WHERE id = ? AND user_id = ?",
+                db_sql("DELETE FROM chat_sessions WHERE id = ? AND user_id = ?"),
                 (session_id, user_id),
             )
             connection.commit()
