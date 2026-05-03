@@ -15,12 +15,13 @@ from threading import Lock
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from flask import Flask, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, Response, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from places_restaurant_chatbot import (
     analyze_app_turn_with_gemini,
     build_final_response_with_gemini,
+    fetch_place_photo_content,
     gemini_enabled,
     geocode_location,
     haversine_miles,
@@ -1666,16 +1667,8 @@ class RetrievalAgent:
                 "open_now": open_now,
                 "open_at_requested_time": open_at_requested_time,
                 "opening_hours_summary": opening_hours_summary(details),
-                "summary": (
-                    details.get("reviewSummary", {}).get("text")
-                    if isinstance(details.get("reviewSummary"), dict)
-                    else details.get("reviewSummary")
-                )
-                or (
-                    details.get("editorialSummary", {}).get("text")
-                    if isinstance(details.get("editorialSummary"), dict)
-                    else details.get("editorialSummary")
-                ),
+                "summary": summary_text(details.get("reviewSummary"))
+                or summary_text(details.get("editorialSummary")),
                 "website_url": details.get("websiteUri"),
                 "menu_verification": {
                     "status": "not_attempted",
@@ -1717,6 +1710,11 @@ class RetrievalAgent:
             result["verification_status"] = verification_status_for_place(result, state)
             result["confidence_score"] = confidence_score_for_place(result, state)
             result["confidence_label"] = confidence_label(result["confidence_score"])
+            result["photo_refs"] = [
+                photo.get("name")
+                for photo in (result.get("place_photos") or [])[:4]
+                if isinstance(photo, dict) and photo.get("name")
+            ]
             result.pop("place_photos", None)
 
         ranked_results = sorted(ranked_results, key=lambda item: self._sort_key(item, state), reverse=True)
@@ -2209,6 +2207,25 @@ def get_session(session_id: str):
             "agent_trace": [],
             "project_summary": project_summary_payload(),
         }
+    )
+
+
+@app.get("/api/place-photo")
+@login_required
+def get_place_photo():
+    photo_name = (request.args.get("name") or "").strip()
+    if not photo_name:
+        return jsonify({"error": "Missing photo name"}), 400
+
+    photo_payload = fetch_place_photo_content(photo_name, max_width_px=900)
+    if not photo_payload:
+        return jsonify({"error": "Photo not found"}), 404
+
+    content, content_type = photo_payload
+    return Response(
+        content,
+        mimetype=content_type or "image/jpeg",
+        headers={"Cache-Control": "public, max-age=86400"},
     )
 
 

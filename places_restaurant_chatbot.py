@@ -281,7 +281,7 @@ def _place_photo_names(place_photos: Optional[List[Dict[str, Any]]]) -> List[str
     return names
 
 
-def _fetch_place_photo_content(photo_name: str, max_width_px: int = 1600) -> Optional[bytes]:
+def fetch_place_photo_content(photo_name: str, max_width_px: int = 1600) -> Optional[Tuple[bytes, str]]:
     if not PLACES_API_KEY or not photo_name:
         return None
     try:
@@ -297,7 +297,7 @@ def _fetch_place_photo_content(photo_name: str, max_width_px: int = 1600) -> Opt
 
     content_type = (response.headers.get("Content-Type") or "").lower()
     if content_type.startswith("image/") and response.content:
-        return response.content
+        return response.content, content_type
     return None
 
 
@@ -414,9 +414,10 @@ def verify_dish_availability(
 
     if ENABLE_PLACE_PHOTO_OCR:
         for photo_name in photo_names[:PLACE_PHOTO_OCR_LIMIT]:
-            content = _fetch_place_photo_content(photo_name)
-            if not content:
+            photo_payload = fetch_place_photo_content(photo_name)
+            if not photo_payload:
                 continue
+            content, _content_type = photo_payload
             image_text = _extract_image_text(content)
             if image_text is None:
                 continue

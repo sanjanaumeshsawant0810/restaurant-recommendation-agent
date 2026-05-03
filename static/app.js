@@ -29,6 +29,30 @@ const userLocationIcon = L.icon({
   shadowSize: [41, 41],
 });
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function displayText(value) {
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  if (value && typeof value === "object") {
+    if (typeof value.text === "string") {
+      return value.text.trim();
+    }
+    if (typeof value.label === "string") {
+      return value.label.trim();
+    }
+  }
+  return "";
+}
+
 function setDrawerOpen(isOpen) {
   sessionSidebar.classList.toggle("open", isOpen);
   chatDrawerBackdrop.classList.toggle("open", isOpen);
@@ -237,17 +261,46 @@ function updateMap(userLocation, results) {
     }
 
     const placeCoords = [place.lat, place.lng];
+    const photoGallery = (place.photo_refs || [])
+      .slice(0, 3)
+      .map(
+        (photoRef, photoIndex) => `
+          <img
+            src="/api/place-photo?name=${encodeURIComponent(photoRef)}"
+            alt="${escapeHtml(`${place.name} photo ${photoIndex + 1}`)}"
+            loading="lazy"
+          >
+        `
+      )
+      .join("");
+    const hoursText = displayText(place.opening_hours_summary);
     const popup = `
-      <strong>${index + 1}. ${place.name}</strong><br>
-      ${place.address || ""}<br>
-      ${place.rating ? `Rating: ${place.rating}<br>` : ""}
-      ${place.distance_miles ? `Distance: ${place.distance_miles} miles<br>` : ""}
-      ${place.estimated_travel_minutes ? `Travel time: ${place.estimated_travel_minutes} min<br>` : ""}
-      ${place.directions_url ? `<a href="${place.directions_url}" target="_blank" rel="noreferrer">Get directions</a><br>` : ""}
-      ${place.google_maps_url ? `<a href="${place.google_maps_url}" target="_blank" rel="noreferrer">Open in Google Maps</a>` : ""}
+      <div class="map-popup">
+        ${photoGallery ? `<div class="map-popup-gallery">${photoGallery}</div>` : ""}
+        <div class="map-popup-body">
+          <strong class="map-popup-title">${index + 1}. ${escapeHtml(place.name)}</strong>
+          ${place.address ? `<div class="map-popup-meta">${escapeHtml(place.address)}</div>` : ""}
+          ${
+            place.rating || place.distance_miles || place.estimated_travel_minutes
+              ? `
+                <div class="map-popup-stats">
+                  ${place.rating ? `<span>Rating ${escapeHtml(place.rating)}</span>` : ""}
+                  ${place.distance_miles ? `<span>${escapeHtml(place.distance_miles)} mi away</span>` : ""}
+                  ${place.estimated_travel_minutes ? `<span>${escapeHtml(place.estimated_travel_minutes)} min</span>` : ""}
+                </div>
+              `
+              : ""
+          }
+          ${hoursText ? `<div class="map-popup-meta">${escapeHtml(hoursText)}</div>` : ""}
+          <div class="map-popup-links">
+            ${place.directions_url ? `<a href="${place.directions_url}" target="_blank" rel="noreferrer">Directions</a>` : ""}
+            ${place.google_maps_url ? `<a href="${place.google_maps_url}" target="_blank" rel="noreferrer">Google Maps</a>` : ""}
+          </div>
+        </div>
+      </div>
     `;
     const marker = L.marker(placeCoords).addTo(map);
-    marker.bindPopup(popup);
+    marker.bindPopup(popup, { maxWidth: 280, className: "restaurant-map-popup" });
     markers.push(marker);
     bounds.push(placeCoords);
 
