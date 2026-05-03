@@ -17,9 +17,12 @@ except ImportError:
     pytesseract = None
 
 try:
-    from PIL import Image
+    from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 except ImportError:
     Image = None
+    ImageEnhance = None
+    ImageFilter = None
+    ImageOps = None
 
 try:
     from google import genai
@@ -257,17 +260,67 @@ def _extract_pdf_text(content: bytes) -> str:
     return "\n".join(pages)
 
 
+def _ocr_text_score(text: str) -> int:
+    stripped = text.strip()
+    if not stripped:
+        return 0
+    alnum_count = sum(char.isalnum() for char in stripped)
+    line_bonus = stripped.count("\n") * 5
+    return alnum_count + line_bonus
+
+
+def _prepare_ocr_variants(image: "Image.Image") -> List["Image.Image"]:
+    variants: List["Image.Image"] = []
+    base = image
+    if base.mode not in {"RGB", "L"}:
+        base = base.convert("RGB")
+    if max(base.size) > MAX_OCR_IMAGE_DIMENSION:
+        base = base.copy()
+        base.thumbnail((MAX_OCR_IMAGE_DIMENSION, MAX_OCR_IMAGE_DIMENSION))
+    variants.append(base)
+
+    if ImageOps is None or ImageEnhance is None or ImageFilter is None:
+        return variants
+
+    grayscale = ImageOps.grayscale(base)
+    autocontrast = ImageOps.autocontrast(grayscale)
+    sharpened = autocontrast.filter(ImageFilter.SHARPEN)
+    contrast_boosted = ImageEnhance.Contrast(sharpened).enhance(1.8)
+    variants.append(contrast_boosted)
+
+    thresholded = contrast_boosted.point(lambda pixel: 255 if pixel > 170 else 0)
+    variants.append(thresholded)
+
+    # Add a few rotated high-signal variants so sideways menu photos
+    # still have a chance to OCR cleanly without exploding the number of passes.
+    for rotated in (
+        contrast_boosted.rotate(90, expand=True),
+        contrast_boosted.rotate(180, expand=True),
+        contrast_boosted.rotate(270, expand=True),
+    ):
+        variants.append(rotated)
+    return variants
+
+
 def _extract_image_text(content: bytes) -> Optional[str]:
     if Image is None or pytesseract is None:
         return None
     try:
         image = Image.open(io.BytesIO(content))
         image.load()
-        if image.mode not in {"RGB", "L"}:
-            image = image.convert("RGB")
-        if max(image.size) > MAX_OCR_IMAGE_DIMENSION:
-            image.thumbnail((MAX_OCR_IMAGE_DIMENSION, MAX_OCR_IMAGE_DIMENSION))
-        return pytesseract.image_to_string(image, timeout=OCR_TIMEOUT_SECONDS)
+        best_text: Optional[str] = None
+        best_score = 0
+        for variant in _prepare_ocr_variants(image):
+            text = pytesseract.image_to_string(
+                variant,
+                timeout=OCR_TIMEOUT_SECONDS,
+                config="--psm 6",
+            )
+            score = _ocr_text_score(text)
+            if score > best_score:
+                best_score = score
+                best_text = text
+        return best_text if best_score > 0 else None
     except Exception:
         return None
 
