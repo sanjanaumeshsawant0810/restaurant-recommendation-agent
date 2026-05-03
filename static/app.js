@@ -53,6 +53,17 @@ function displayText(value) {
   return "";
 }
 
+function handlePopupImageError(image) {
+  if (!image) {
+    return;
+  }
+  const gallery = image.parentElement;
+  image.remove();
+  if (gallery && !gallery.querySelector("img")) {
+    gallery.remove();
+  }
+}
+
 function setDrawerOpen(isOpen) {
   sessionSidebar.classList.toggle("open", isOpen);
   chatDrawerBackdrop.classList.toggle("open", isOpen);
@@ -269,6 +280,7 @@ function updateMap(userLocation, results) {
             src="/api/place-photo?name=${encodeURIComponent(photoRef)}"
             alt="${escapeHtml(`${place.name} photo ${photoIndex + 1}`)}"
             loading="lazy"
+            onerror="handlePopupImageError(this)"
           >
         `
       )
