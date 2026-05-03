@@ -61,6 +61,19 @@ function handlePopupImageError(image) {
   image.remove();
   if (gallery && !gallery.querySelector("img")) {
     gallery.remove();
+    return;
+  }
+  updatePopupGalleryLayout(gallery);
+}
+
+function updatePopupGalleryLayout(gallery) {
+  if (!gallery) {
+    return;
+  }
+  const imageCount = gallery.querySelectorAll("img").length;
+  gallery.classList.remove("count-1", "count-2", "count-3");
+  if (imageCount > 0) {
+    gallery.classList.add(`count-${Math.min(imageCount, 3)}`);
   }
 }
 
@@ -272,6 +285,7 @@ function updateMap(userLocation, results) {
     }
 
     const placeCoords = [place.lat, place.lng];
+    const photoRefs = (place.photo_refs || []).slice(0, 3);
     const photoGallery = (place.photo_refs || [])
       .slice(0, 3)
       .map(
@@ -288,7 +302,7 @@ function updateMap(userLocation, results) {
     const hoursText = displayText(place.opening_hours_summary);
     const popup = `
       <div class="map-popup">
-        ${photoGallery ? `<div class="map-popup-gallery">${photoGallery}</div>` : ""}
+        ${photoGallery ? `<div class="map-popup-gallery count-${Math.min(photoRefs.length, 3)}">${photoGallery}</div>` : ""}
         <div class="map-popup-body">
           <strong class="map-popup-title">${index + 1}. ${escapeHtml(place.name)}</strong>
           ${place.address ? `<div class="map-popup-meta">${escapeHtml(place.address)}</div>` : ""}
@@ -298,7 +312,11 @@ function updateMap(userLocation, results) {
                 <div class="map-popup-stats">
                   ${place.rating ? `<span>Rating ${escapeHtml(place.rating)}</span>` : ""}
                   ${place.distance_miles ? `<span>${escapeHtml(place.distance_miles)} mi away</span>` : ""}
-                  ${place.estimated_travel_minutes ? `<span>${escapeHtml(place.estimated_travel_minutes)} min</span>` : ""}
+                  ${
+                    place.estimated_travel_minutes
+                      ? `<span>${escapeHtml(place.estimated_travel_minutes)} min${place.travel_mode_label ? ` ${escapeHtml(place.travel_mode_label)}` : ""}</span>`
+                      : ""
+                  }
                 </div>
               `
               : ""

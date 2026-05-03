@@ -1044,6 +1044,7 @@ def infer_travel_preferences(message: str) -> Dict[str, Optional[int]]:
 
     min_travel_minutes = None
     travel_minutes = None
+    hour_match = None
     range_match = re.search(r"(\d{1,3})\s*(?:to|-)\s*(\d{1,3})\s*(minute|min|minutes)", cleaned)
     if range_match:
         min_travel_minutes = int(range_match.group(1))
@@ -1059,6 +1060,11 @@ def infer_travel_preferences(message: str) -> Dict[str, Optional[int]]:
         numeric_value = int(cleaned)
         if numeric_value > 5:
             travel_minutes = numeric_value
+
+    # Broader time windows are usually interpreted as driving unless the user
+    # explicitly mentions a different mode.
+    if travel_mode is None and travel_minutes is not None and (hour_match is not None or travel_minutes >= 30):
+        travel_mode = "car"
 
     search_radius_meters = None
     if travel_minutes is not None:
@@ -1672,14 +1678,6 @@ class RetrievalAgent:
             )
             score = quality_rating * 3.0
             score += review_volume_bonus(details.get("userRatingCount"))
-            score += max(0.0, 5.0 - min(distance_miles, 5.0))
-            if estimated_travel_minutes is not None and state.travel_minutes:
-                preferred_center = (
-                    (state.min_travel_minutes + state.travel_minutes) / 2
-                    if state.min_travel_minutes is not None
-                    else state.travel_minutes
-                )
-                score += max(0.0, 3.0 - abs(preferred_center - estimated_travel_minutes) / 5.0)
             if state.when == "later":
                 if open_at_requested_time is True:
                     score += 2.0
@@ -1694,6 +1692,7 @@ class RetrievalAgent:
                 "quality_rating": round(quality_rating, 3),
                 "distance_miles": distance_miles,
                 "estimated_travel_minutes": estimated_travel_minutes,
+                "travel_mode_label": travel_mode_label(state.travel_mode),
                 "travel_estimates": travel_estimates,
                 "primary_type": details.get("primaryTypeDisplayName", {}).get("text"),
                 "open_now": open_now,
@@ -1766,14 +1765,7 @@ class RetrievalAgent:
         review_count = int(place.get("user_rating_count") or 0)
         quality_rating = float(place.get("quality_rating") or 0.0)
         score = float(place.get("score") or 0.0)
-        travel_minutes = place.get("estimated_travel_minutes")
-        travel_gap = (
-            abs(travel_minutes - state.travel_minutes)
-            if travel_minutes is not None and state.travel_minutes is not None
-            else 999
-        )
-
-        return (score, quality_rating, min(review_count, 3000), rating, -travel_gap)
+        return (score, quality_rating, min(review_count, 3000), rating)
 
     def _diversify_results(self, ranked_results: List[dict], limit: int) -> List[dict]:
         diversified: List[dict] = []

@@ -654,12 +654,28 @@ body.drawer-open {
   background: rgba(32, 35, 52, 0.08);
 }
 
+.map-popup-gallery.count-1 {
+  grid-template-columns: 1fr;
+}
+
+.map-popup-gallery.count-2 {
+  grid-template-columns: repeat(2, 1fr);
+}
+
 .map-popup-gallery img {
   width: 100%;
   height: 104px;
   object-fit: cover;
   display: block;
   background: rgba(32, 35, 52, 0.08);
+}
+
+.map-popup-gallery.count-1 img {
+  height: 150px;
+}
+
+.map-popup-gallery.count-2 img {
+  height: 120px;
 }
 
 .map-popup-body {
