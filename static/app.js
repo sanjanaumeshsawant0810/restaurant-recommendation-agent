@@ -457,6 +457,15 @@ chatForm.addEventListener("submit", async (event) => {
   }
 });
 
+chatInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    if (!chatInput.disabled) {
+      chatForm.requestSubmit();
+    }
+  }
+});
+
 newChatButton.addEventListener("click", async () => {
   await createSession();
   setDrawerOpen(false);

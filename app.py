@@ -772,6 +772,48 @@ def is_place_follow_up_request(message: str) -> bool:
     return any(phrase in cleaned for phrase in phrases) or "?" in message
 
 
+def is_search_refinement_request(message: str) -> bool:
+    cleaned = normalize_text(message)
+    if not cleaned:
+        return False
+
+    inferred_travel = infer_travel_preferences(message)
+    if inferred_travel["travel_mode"] or inferred_travel["travel_minutes"] or inferred_travel["min_travel_minutes"]:
+        return True
+
+    if parse_min_rating(message) is not None:
+        return True
+
+    if infer_location_mode(message) or infer_manual_location_text(message) or parse_coordinate_pair(message):
+        return True
+
+    if infer_explicit_cuisine(message):
+        return True
+
+    if infer_when(message) or any(value is not None for value in infer_requested_time_details(message).values()):
+        return True
+
+    refinement_markers = [
+        "change",
+        "update",
+        "instead",
+        "make it",
+        "lower it",
+        "raise it",
+        "expand",
+        "broaden",
+        "within",
+        "minutes by",
+        "mins by",
+        "rating",
+        "stars",
+        "near ",
+        " in ",
+        " at ",
+    ]
+    return any(marker in cleaned for marker in refinement_markers)
+
+
 def find_follow_up_place(message: str, results: List[dict]) -> Optional[dict]:
     if not results or not is_place_follow_up_request(message):
         return None
@@ -873,6 +915,10 @@ def parse_min_rating(message: str) -> Optional[float]:
     match = re.search(r"(?:at least|min(?:imum)?|rating(?:\s+of)?)\s*(\d(?:\.\d)?)", cleaned)
     if match:
         return float(match.group(1))
+    if "rating" in cleaned or "stars" in cleaned or "star" in cleaned:
+        match = re.search(r"(?:change|make|set|lower|raise|update|bump)\s+(?:it\s+)?(?:to\s+)?(\d(?:\.\d)?)", cleaned)
+        if match:
+            return float(match.group(1))
     if re.fullmatch(r"\d(?:\.\d)?", cleaned):
         value = float(cleaned)
         if 1.0 <= value <= 5.0:
@@ -982,6 +1028,54 @@ def infer_manual_location_text(message: str) -> Optional[str]:
             location_text = match.group(1).strip(" ,.")
             if location_text and not re.fullmatch(r"\d{1,2}(?::\d{2})?\s*(?:am|pm)?", location_text) and not looks_like_time_phrase(location_text):
                 return location_text
+
+    refinement_prefixes = [
+        "what about ",
+        "how about ",
+        "instead ",
+        "make it ",
+        "change it to ",
+        "change the location to ",
+        "change location to ",
+        "update it to ",
+        "update the location to ",
+        "update location to ",
+        "search near ",
+        "try ",
+    ]
+    candidate = cleaned
+    for prefix in refinement_prefixes:
+        if candidate.startswith(prefix):
+            candidate = candidate[len(prefix) :].strip(" ,.")
+            break
+
+    blocked_candidates = {
+        "it",
+        "this",
+        "that",
+        "the first one",
+        "the second one",
+        "the third one",
+        "first one",
+        "second one",
+        "third one",
+        "first",
+        "second",
+        "third",
+        "more details",
+        "more info",
+    }
+    if (
+        candidate
+        and candidate not in blocked_candidates
+        and len(candidate.split()) <= 6
+        and not is_cuisine_only_phrase(candidate)
+        and parse_min_rating(candidate) is None
+        and not infer_travel_preferences(candidate)["travel_minutes"]
+        and not infer_travel_preferences(candidate)["travel_mode"]
+        and not looks_like_time_phrase(candidate)
+    ):
+        return candidate
     return None
 
 
@@ -992,6 +1086,18 @@ def infer_cuisine_from_dish(dish: Optional[str]) -> Optional[str]:
     for key, cuisine in sorted(DISH_TO_CUISINE.items(), key=lambda item: len(item[0]), reverse=True):
         if key in cleaned:
             return cuisine
+    return None
+
+
+def infer_explicit_cuisine(message: str) -> Optional[str]:
+    cleaned = normalize_text(message)
+    if not cleaned:
+        return None
+
+    normalized_terms = sorted(CUISINE_ONLY_TERMS, key=len, reverse=True)
+    for term in normalized_terms:
+        if cleaned == term or re.search(rf"\b{re.escape(term)}\b", cleaned):
+            return term.removesuffix(" food")
     return None
 
 
@@ -1517,6 +1623,7 @@ class IntentAgent:
         cleaned = normalize_text(message)
         bare_numeric_reply = bool(re.fullmatch(r"\d{1,3}(?:\.\d)?", cleaned))
         previous_dish = state.dish
+        previous_manual_location = state.manual_location
         state.llm_next_question = None
 
         gemini_result = None
@@ -1576,11 +1683,13 @@ class IntentAgent:
             state.manual_location = message.strip()
             state.user_location = parsed_coords
             traces.append(AgentTrace(self.name, "location_parse", "Parsed coordinates directly from the message."))
-        elif not state.user_location:
+        else:
             inferred_manual_location = infer_manual_location_text(message)
             if inferred_manual_location:
                 state.location_mode = "manual"
                 state.manual_location = inferred_manual_location
+                if inferred_manual_location != previous_manual_location:
+                    state.user_location = None
                 traces.append(
                     AgentTrace(
                         self.name,
@@ -1588,7 +1697,7 @@ class IntentAgent:
                         f"Inferred manual location from the message: {inferred_manual_location}.",
                     )
                 )
-            elif state.location_mode == "current" and browser_location:
+            elif state.location_mode == "current" and browser_location and not state.user_location:
                 state.user_location = {
                     "label": "Current location",
                     "address": "Current browser location",
@@ -1599,12 +1708,20 @@ class IntentAgent:
             elif state.location_mode == "manual" and not state.manual_location:
                 if len(cleaned) > 2 and all(token not in cleaned for token in ["manual", "location", "enter"]):
                     state.manual_location = message.strip()
+                    state.user_location = None
                     traces.append(AgentTrace(self.name, "location_capture", "Stored manual location text for geocoding."))
 
         inferred_dish = infer_dish(message)
         if inferred_dish:
             state.dish = inferred_dish
             traces.append(AgentTrace(self.name, "slot_fill", f"Captured food intent: {state.dish}."))
+
+        inferred_explicit_cuisine = infer_explicit_cuisine(message)
+        if inferred_explicit_cuisine:
+            state.cuisine = inferred_explicit_cuisine
+            if not inferred_dish and is_cuisine_only_phrase(message):
+                state.dish = None
+            traces.append(AgentTrace(self.name, "slot_fill", f"Captured cuisine preference: {state.cuisine}."))
 
         if state.manual_location and state.dish:
             normalized_location = normalize_text(state.manual_location)
@@ -1618,7 +1735,7 @@ class IntentAgent:
                 traces.append(AgentTrace(self.name, "cleanup", "Ignored location text that was mistakenly captured as a dish."))
 
         inferred_cuisine = infer_cuisine_from_dish(state.dish)
-        if inferred_cuisine:
+        if inferred_cuisine and not inferred_explicit_cuisine:
             state.cuisine = inferred_cuisine
             traces.append(AgentTrace(self.name, "inference", f"Inferred cuisine from dish: {state.cuisine}."))
 
@@ -1656,9 +1773,9 @@ class IntentAgent:
             traces.append(AgentTrace(self.name, "default", "Assumed the user wants to eat right now because no future timing was specified."))
 
         if (
-            not state.user_location
-            and not state.manual_location
+            (not state.user_location or state.manual_location or state.location_mode == "manual")
             and (not inferred_dish or not inferred_cuisine)
+            and not inferred_explicit_cuisine
             and inferred_rating is None
             and not inferred_travel["travel_mode"]
             and not inferred_travel["travel_minutes"]
@@ -1667,9 +1784,10 @@ class IntentAgent:
         ):
             state.location_mode = "manual"
             state.manual_location = message.strip()
+            state.user_location = None
             if inferred_dish and not inferred_cuisine:
                 state.dish = previous_dish
-            traces.append(AgentTrace(self.name, "location_capture", "Treated the latest short reply as a manual location."))
+            traces.append(AgentTrace(self.name, "location_capture", "Treated the latest short reply as an updated manual location."))
 
         if state.location_mode == "manual" and state.manual_location and not state.user_location:
             state.user_location = geocode_location(state.manual_location)
@@ -2048,32 +2166,33 @@ class CoordinatorAgent:
             append_message(state, "assistant", reply)
             return self._payload(session_id, state, reply, results, traces)
 
-        follow_up_place = find_follow_up_place(message, state.last_results)
-        if follow_up_place is not None:
-            reply = self.response_agent.build_place_follow_up_reply(state, follow_up_place)
-            traces.append(
-                AgentTrace(
-                    "Response Agent",
-                    "place_follow_up",
-                    f"Answered a follow-up question about {follow_up_place['name']} from the existing results.",
-                )
-            )
-            append_message(state, "assistant", reply)
-            return self._payload(session_id, state, reply, state.last_results, traces)
-        if state.last_results and is_place_follow_up_request(message):
-            reply = "I can help with that place, but I couldn't tell which recommendation you meant. Mention the restaurant name again, or say something like 'tell me about the second one.'"
-            traces.append(
-                AgentTrace(
-                    "Clarification Agent",
-                    "follow_up_clarify",
-                    "Asked the user to clarify which existing recommendation they meant.",
-                )
-            )
-            append_message(state, "assistant", reply)
-            return self._payload(session_id, state, reply, state.last_results, traces)
-
         traces.extend(self.intent_agent.run(state, message, browser_location))
         question = self.clarification_agent.next_question(state)
+
+        if state.last_results and not is_search_refinement_request(message):
+            follow_up_place = find_follow_up_place(message, state.last_results)
+            if follow_up_place is not None:
+                reply = self.response_agent.build_place_follow_up_reply(state, follow_up_place)
+                traces.append(
+                    AgentTrace(
+                        "Response Agent",
+                        "place_follow_up",
+                        f"Answered a follow-up question about {follow_up_place['name']} from the existing results.",
+                    )
+                )
+                append_message(state, "assistant", reply)
+                return self._payload(session_id, state, reply, state.last_results, traces)
+            if is_place_follow_up_request(message):
+                reply = "I can help with that place, but I couldn't tell which recommendation you meant. Mention the restaurant name again, or say something like 'tell me about the second one.'"
+                traces.append(
+                    AgentTrace(
+                        "Clarification Agent",
+                        "follow_up_clarify",
+                        "Asked the user to clarify which existing recommendation they meant.",
+                    )
+                )
+                append_message(state, "assistant", reply)
+                return self._payload(session_id, state, reply, state.last_results, traces)
 
         if not self.retrieval_agent.ready_for_search(state):
             reply = question or "Tell me a little more so I can narrow it down."

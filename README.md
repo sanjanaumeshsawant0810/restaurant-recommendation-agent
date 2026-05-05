@@ -4,8 +4,26 @@ InstaDine is an agentic AI restaurant recommendation product with a runnable web
 
 ## Live demo
 
-- Public app: [https://restaurant-recommendation-agent-566313238923.us-east1.run.app](https://restaurant-recommendation-agent-566313238923.us-east1.run.app)
+- Public app: [https://restaurant-recommendation-agent-7eg2sfrnea-ue.a.run.app](https://restaurant-recommendation-agent-7eg2sfrnea-ue.a.run.app)
 - Source code: [https://github.com/sanjanaumeshsawant0810/restaurant-recommendation-agent](https://github.com/sanjanaumeshsawant0810/restaurant-recommendation-agent)
+
+## Local-first evaluation
+
+Evaluators do not need to redeploy the application. The public demo link can be used to test the hosted product, while the GitHub repository can be used to review and run the local version.
+
+For local testing, clone the repository, install dependencies, set the required environment variables, and run:
+
+```bash
+python3 app.py
+```
+
+Then open:
+
+```text
+http://127.0.0.1:5001
+```
+
+This is the recommended reproducibility path because it avoids requiring evaluators to configure cloud hosting or spend money on deployment.
 
 ## Why this fits the course
 
@@ -70,6 +88,42 @@ Main tables:
 
 The SQLite database is created locally under `data/instadine.db`.
 
+## API keys and security
+
+This repository does not include API keys or secrets. The application uses Google services that may be connected to billing, so keys should never be committed to a public GitHub repository.
+
+To run the full version locally, create your own Google Cloud / Google AI credentials and add them as environment variables. At minimum, enable the Google Places API for restaurant retrieval. If using Gemini-based reasoning, also create a Gemini API key or configure Gemini access through Google AI Studio or Google Cloud Vertex AI.
+
+Required environment variables:
+
+```bash
+export GOOGLE_MAPS_API_KEY="your_google_maps_key"
+export GEMINI_API_KEY="your_gemini_key"
+export FLASK_SECRET_KEY="your_flask_secret"
+```
+
+The deployed demo is provided so evaluators can test the product without setting up billing or cloud deployment themselves.
+
+## Dependencies
+
+All Python dependencies are listed in `requirements.txt`. Install them with:
+
+```bash
+pip install -r requirements.txt
+```
+
+The main dependency groups are:
+
+- Flask and Gunicorn for the web application
+- Requests and BeautifulSoup for retrieving and parsing restaurant/menu webpages
+- Google GenAI client for Gemini-based intent understanding and optional response generation
+- Google Places API calls through HTTP requests for live restaurant retrieval
+- pypdf for reading menu PDFs
+- Pillow and pytesseract for optional OCR-based menu image verification
+- psycopg for optional PostgreSQL deployment support
+
+If OCR is not installed or available locally, the app can still run, but image-based menu verification may be skipped.
+
 ## How to run locally
 
 1. Clone the repository:
@@ -110,6 +164,12 @@ export GOOGLE_MAPS_API_KEY="your_google_maps_key"
 export GEMINI_API_KEY="your_gemini_key"
 ```
 
+Google setup notes:
+
+- Enable the Google Places API in Google Cloud for live restaurant retrieval and geocoding.
+- Create a Gemini API key through Google AI Studio, or configure equivalent Gemini access through Google Cloud / Vertex AI.
+- Keep all keys private and out of version control because Google services may be connected to billing.
+
 Optional:
 
 ```bash
@@ -131,6 +191,30 @@ python3 app.py
 Then open:
 
 `http://127.0.0.1:5001`
+
+## Verification test cases
+
+After starting the app locally, create an account and try the following prompts:
+
+```text
+I want pizza near Times Square and I can walk for 15 minutes.
+```
+
+Expected behavior:
+
+- The assistant asks a clarification question if needed.
+- The app retrieves restaurant recommendations from Google Places.
+- Results appear in the chat.
+- Map markers appear on the right side.
+- Each recommendation includes reasoning based on rating, distance, timing, or verification status.
+
+You can also test:
+
+```text
+Show me the top 10 recommendations.
+Tell me more about the second one.
+Does Down Under Coffee have dalgona coffee?
+```
 
 ## Password reset email
 
