@@ -1032,21 +1032,18 @@ def infer_manual_location_text(message: str) -> Optional[str]:
     refinement_prefixes = [
         "what about ",
         "how about ",
-        "instead ",
-        "make it ",
-        "change it to ",
         "change the location to ",
         "change location to ",
-        "update it to ",
         "update the location to ",
         "update location to ",
         "search near ",
-        "try ",
     ]
     candidate = cleaned
+    matched_refinement_prefix = False
     for prefix in refinement_prefixes:
         if candidate.startswith(prefix):
             candidate = candidate[len(prefix) :].strip(" ,.")
+            matched_refinement_prefix = True
             break
 
     blocked_candidates = {
@@ -1066,7 +1063,8 @@ def infer_manual_location_text(message: str) -> Optional[str]:
         "more info",
     }
     if (
-        candidate
+        matched_refinement_prefix
+        and candidate
         and candidate not in blocked_candidates
         and len(candidate.split()) <= 6
         and not is_cuisine_only_phrase(candidate)
@@ -1634,12 +1632,13 @@ class IntentAgent:
                 traces.append(AgentTrace(self.name, "llm_fallback", f"Gemini analysis failed, using local rules instead: {exc}."))
 
         if gemini_result:
+            gemini_has_location_signal = bool(
+                infer_location_mode(message) or infer_manual_location_text(message) or parse_coordinate_pair(message)
+            )
             for field_name in [
                 "when",
                 "cuisine",
                 "dish",
-                "location_mode",
-                "manual_location",
                 "travel_mode",
                 "min_travel_minutes",
                 "travel_minutes",
@@ -1648,6 +1647,11 @@ class IntentAgent:
                 value = gemini_result.get(field_name)
                 if value not in (None, ""):
                     setattr(state, field_name, value)
+            if gemini_has_location_signal:
+                for field_name in ["location_mode", "manual_location"]:
+                    value = gemini_result.get(field_name)
+                    if value not in (None, ""):
+                        setattr(state, field_name, value)
             if gemini_result.get("next_question"):
                 state.llm_next_question = str(gemini_result["next_question"]).strip()
             traces.append(AgentTrace(self.name, "llm_slot_fill", "Gemini analyzed the turn and updated the conversation state."))
