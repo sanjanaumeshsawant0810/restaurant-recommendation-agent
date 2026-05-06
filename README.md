@@ -77,7 +77,7 @@ That gives you:
 
 ## Storage
 
-The app now uses **SQLite** rather than JSON files for active app data.
+The app uses **SQLite** for local development and reproducibility, with **optional PostgreSQL support** for deployment environments.
 
 Main tables:
 
@@ -101,6 +101,8 @@ export GOOGLE_MAPS_API_KEY="your_google_maps_key"
 export GEMINI_API_KEY="your_gemini_key"
 export FLASK_SECRET_KEY="your_flask_secret"
 ```
+
+The code also accepts `GOOGLE_API_KEY` as an alternative Gemini credential source, but `GEMINI_API_KEY` is the recommended variable to set for local use.
 
 The deployed demo is provided so evaluators can test the product without setting up billing or cloud deployment themselves.
 
@@ -175,12 +177,14 @@ Optional:
 ```bash
 export FLASK_DEBUG=true
 export ENABLE_GEMINI_FINAL_RESPONSE=true
+export ENABLE_PLACE_PHOTO_OCR=true
 ```
 
 Notes:
 
 - If `GEMINI_API_KEY` is missing, the app falls back to rule-based interpretation.
 - By default, the **final deployed response wording does not use Gemini**, because the local formatter is more reliable on constrained hosting. If you want Gemini to write the final recommendation text too, set `ENABLE_GEMINI_FINAL_RESPONSE=true`.
+- `ENABLE_PLACE_PHOTO_OCR=true` enables OCR checks on Google Places photos when available. If it is unset, the app can still verify dishes from websites, linked menu pages, PDFs, and restaurant-site images.
 
 7. Start the app:
 
