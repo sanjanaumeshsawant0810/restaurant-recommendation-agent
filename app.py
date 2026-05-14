@@ -1017,6 +1017,22 @@ def infer_manual_location_text(message: str) -> Optional[str]:
     ):
         return None
 
+    def _trim_location_candidate(text: str) -> str:
+        candidate = (text or "").strip(" ,.")
+        separators = [
+            r"\bwhich\s+is\b",
+            r"\bthat\s+is\b",
+            r"\bthat'?s\b",
+            r"\bwithin\b",
+            r"\bfor\b\s+\d{1,3}\s*(?:minute|min|minutes|hr|hour|hours)\b",
+            r"\bin\b\s+\d{1,3}\s*(?:minute|min|minutes|hr|hour|hours)\b",
+        ]
+        for separator in separators:
+            parts = re.split(separator, candidate, maxsplit=1)
+            if parts:
+                candidate = parts[0].strip(" ,.")
+        return candidate
+
     patterns = [
         r"\bnear\s+(.+?)(?:\s+with\b|\s+and\b|$)",
         r"\bat\s+(.+?)(?:\s+with\b|\s+and\b|$)",
@@ -1025,7 +1041,7 @@ def infer_manual_location_text(message: str) -> Optional[str]:
     for pattern in patterns:
         match = re.search(pattern, cleaned)
         if match:
-            location_text = match.group(1).strip(" ,.")
+            location_text = _trim_location_candidate(match.group(1))
             if location_text and not re.fullmatch(r"\d{1,2}(?::\d{2})?\s*(?:am|pm)?", location_text) and not looks_like_time_phrase(location_text):
                 return location_text
 
@@ -1042,7 +1058,7 @@ def infer_manual_location_text(message: str) -> Optional[str]:
     matched_refinement_prefix = False
     for prefix in refinement_prefixes:
         if candidate.startswith(prefix):
-            candidate = candidate[len(prefix) :].strip(" ,.")
+            candidate = _trim_location_candidate(candidate[len(prefix) :])
             matched_refinement_prefix = True
             break
 
@@ -1172,8 +1188,31 @@ def infer_dish(message: str) -> Optional[str]:
         "get there",
         "there by",
     ]
-    if any(marker in cleaned for marker in non_food_markers):
+    if any(marker == cleaned for marker in non_food_markers):
         return None
+
+    def _trim_dish_candidate(text: str) -> str:
+        value = re.sub(r"^(?:a|an|the)\s+", "", (text or "").strip(" ."))
+        separators = [
+            r"\b(?:today|tomorrow|tonight|now|later)\b",
+            r"\bthis\s+(?:afternoon|evening|morning)\b",
+            r"\bat\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\b",
+            r"\bnear\b",
+            r"\bin\b",
+            r"\bat\b",
+            r"\bwith\b",
+            r"\band\s+i\s+can\b",
+            r"\band\s+can\b",
+            r"\byou\s+can\s+use\b",
+            r"\bi\s+can\s+travel\b",
+            r"\bwithin\b",
+            r"\bfor\s+\d{1,3}\s*(?:minute|min|minutes|hr|hour|hours)\b",
+        ]
+        for separator in separators:
+            parts = re.split(separator, value, maxsplit=1)
+            if parts:
+                value = parts[0].strip(" .,-")
+        return value
 
     candidates = [
         r"i want to (?:have|eat|drink|try)\s+(.+?)(?:\s+\bnear\b|\s+\bin\b|\s+\bat\b|\s+\bwith\b|\s+\band\b|$)",
@@ -1185,12 +1224,17 @@ def infer_dish(message: str) -> Optional[str]:
     for pattern in candidates:
         match = re.search(pattern, cleaned)
         if match:
-            value = match.group(1).strip(" .")
-            value = re.sub(r"^(?:a|an|the)\s+", "", value)
+            value = _trim_dish_candidate(match.group(1))
             if value and value not in {"under", "over", "price", "budget", "there"} and not is_cuisine_only_phrase(value):
                 return value
-    if len(cleaned.split()) <= 4 and cleaned not in {"under", "over", "there"} and not is_cuisine_only_phrase(cleaned):
-        return cleaned
+    cleaned_candidate = _trim_dish_candidate(cleaned)
+    if (
+        len(cleaned_candidate.split()) <= 4
+        and cleaned_candidate not in {"under", "over", "there"}
+        and not is_cuisine_only_phrase(cleaned_candidate)
+        and cleaned_candidate
+    ):
+        return cleaned_candidate
     return None
 
 

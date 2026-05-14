@@ -281,13 +281,13 @@ SMTP_USE_TLS
 
 Try prompts like:
 
-- `I want pizza near Times Square and I can walk for 15 minutes.`
-- `I want gelato tomorrow at 2 pm near Columbus Circle and I can travel 10 minutes by subway.`
-- `I want wine and fine dining near Marcus Garvey Park, and I can travel 5 to 10 minutes by walk or public transport.`
-- `I want dosa now and I can drive 20 minutes from 40.754314, -73.977541.`
+- `I want to eat pizza near Times Square and I can walk for 15 minutes.`
+- `I want to have gelato tomorrow at 2 pm near Columbus Circle and I can travel 10 minutes by subway.`
+- `I want to have wine and fine dining near Marcus Garvey Park, and I can travel 5 to 10 minutes by walk or public transport.`
+- `I want to eat dosa now and I can drive 20 minutes from 40.754314, -73.977541.`
 - `Show me the top 10 recommendations.`
 - `Tell me more about the second one.`
-- `Tell me about Le Rivage.`
+- `Tell me about "xyz resturant".`
 - `Does Down Under Coffee have dalgona coffee?`
 
 ## Current limitations
